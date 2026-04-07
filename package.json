@@ -1,0 +1,44 @@
+{
+  "name": "surfagent-discord",
+  "version": "0.1.0",
+  "description": "Discord MCP adapter for SurfAgent with channel navigation, visible message extraction, and state inspection.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "surfagent",
+    "discord",
+    "browser",
+    "automation"
+  ],
+  "homepage": "https://surfagent.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/surfagentapp/surfagent-discord.git"
+  },
+  "license": "MIT",
+  "author": "SurfAgent <support@surfagent.app>",
+  "bin": {
+    "surfagent-discord": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/index.js && esbuild src/smoke.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/smoke.js && chmod +x dist/index.js",
+    "smoke": "npm run build && node dist/smoke.js",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.5",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

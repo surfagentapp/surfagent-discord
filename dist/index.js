@@ -20840,7 +20840,8 @@ var import_node_os = require("node:os");
 var DAEMON_URL = process.env.SURFAGENT_DAEMON_URL ?? "http://127.0.0.1:7201";
 var TOKEN_PATH = (0, import_node_path.join)((0, import_node_os.homedir)(), ".surfagent", "daemon-token.txt");
 var SITE_URL_RE = new RegExp(String.raw`https?://(?:canary\.|ptb\.)?discord\.com/`, "i");
-var BASE_URL = "https://discord.com/channels/@me";
+var BASE_URL = "https://discord.com";
+var DEFAULT_PATH = "/channels/@me";
 var cachedToken;
 function getAuthToken() {
   if (cachedToken !== void 0) return cachedToken;
@@ -20899,8 +20900,8 @@ async function findSiteTab() {
   const tabs = await listTabs();
   return tabs.find((tab) => SITE_URL_RE.test(tab.url)) ?? null;
 }
-async function ensureSiteTab(path = "/channels/@me") {
-  const targetUrl = /^https?:\/\//i.test(path) ? path : `${BASE_URL.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+async function ensureSiteTab(path = DEFAULT_PATH) {
+  const targetUrl = /^https?:\/\//i.test(path) ? path : `${BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
   const existing = await findSiteTab();
   if (existing) {
     await navigateTab(targetUrl, existing.id);
@@ -20914,44 +20915,194 @@ async function openSite(path) {
   return ensureSiteTab(path || "/channels/@me");
 }
 async function getSiteState(tabId) {
-  const raw = await evaluate(String.raw`(() => {
-        const url = location.href;
-        const path = location.pathname + location.hash;
-        const title = document.title || null;
-        const mainPresent = !!document.querySelector('main, [role="main"]');
-        const selectedGuild = document.querySelector('[aria-label*="Servers"] [aria-selected="true"]')?.getAttribute('aria-label') || null;
-const selectedChannel = document.querySelector('[role="link"][aria-current="page"], [data-list-item-id*="channels___"] [aria-selected="true"]')?.textContent?.trim() || null;
-        return JSON.stringify({
-          ok: true,
-          site: 'Discord',
-          url,
-          path,
-          title,
-          mainPresent,
-          selectedGuild,
-        selectedChannel,
-        });
-      })();`, tabId);
+  const raw = await evaluate(buildStateExpression(), tabId);
   return parseJsonResult(raw);
 }
-async function extractVisible(limit = 10, tabId) {
-  const raw = await evaluate(String.raw`(() => {
-        const diagnostics = {
-          url: location.href,
-          path: location.pathname + location.hash,
-          title: document.title || null,
-          mainPresent: !!document.querySelector('main, [role="main"]'),
-        };
-        const rows = [...document.querySelectorAll('[id^="chat-messages-"], [class*="messageListItem"]')]
-  .map((el, index) => ({
-    index,
-    text: (el.innerText || el.textContent || '').trim(),
-  }))
-  .filter((item) => item.text)
-  .slice(0, limit);
-return { ok: true, count: rows.length, items: rows, diagnostics };
-      })();`, tabId);
+async function extractVisibleMessages(limit = 10, tabId) {
+  const raw = await evaluate(buildMessageExtractionExpression(limit), tabId);
   return parseJsonResult(raw);
+}
+async function extractChannels(limit = 25, tabId) {
+  const raw = await evaluate(buildChannelExtractionExpression(limit), tabId);
+  return parseJsonResult(raw);
+}
+async function extractThreads(limit = 25, tabId) {
+  const raw = await evaluate(buildThreadExtractionExpression(limit), tabId);
+  return parseJsonResult(raw);
+}
+function buildSharedDiscordHelpers() {
+  return String.raw`
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const text = (el) => clean(el?.innerText || el?.textContent || '');
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const uniqueBy = (items, keyFn) => {
+      const seen = new Set();
+      return items.filter((item) => {
+        const key = keyFn(item);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+    const path = location.pathname + location.hash;
+    const pathParts = location.pathname.split('/').filter(Boolean);
+    const guildId = pathParts[1] && /^\d+$/.test(pathParts[1]) ? pathParts[1] : null;
+    const channelId = pathParts[2] && /^\d+$/.test(pathParts[2]) ? pathParts[2] : null;
+    const routeKind = (() => {
+      if (/^\/login/.test(location.pathname)) return 'login';
+      if (/^\/channels\/[@a-zA-Z0-9_-]+\/\d+/.test(location.pathname)) return 'channel';
+      if (location.pathname === '/channels/@me') return 'friends';
+      if (/^\/channels\/\d+$/.test(location.pathname)) return 'guild';
+      if (/^\/invite\//.test(location.pathname)) return 'invite';
+      if (/^\/settings/.test(location.pathname)) return 'settings';
+      return 'unknown';
+    })();
+    const pageText = document.body?.innerText || '';
+    const loginRequired = routeKind === 'login' || /welcome back!|log in with qr code|need an account\?|or sign in with passkey/i.test(pageText);
+    const selectedGuild = text(document.querySelector('nav[aria-label] [aria-current="page"], nav[aria-label] [aria-selected="true"]')) || null;
+    const selectedChannel = text(document.querySelector('[data-list-item-id^="channels___"] [aria-current="page"], [data-list-item-id^="channels___"][aria-selected="true"], a[href*="/channels/"][aria-current="page"]')) || null;
+    const headings = [...document.querySelectorAll('h1, h2, h3, [role="heading"]')].map((el) => text(el)).filter(Boolean).slice(0, 10);
+    const diagnostics = () => ({
+      url: location.href,
+      path,
+      title: document.title || null,
+      routeKind,
+      loginRequired,
+      guildId,
+      channelId,
+      headings,
+      appMountPresent: !!document.getElementById('app-mount'),
+      mainPresent: !!document.querySelector('main, [role="main"]'),
+      serverRailPresent: !!document.querySelector('nav[aria-label], [aria-label*="Servers"]'),
+      channelRailPresent: !!document.querySelector('[data-list-item-id^="channels___"], nav a[href*="/channels/"]'),
+      messagePanePresent: !!document.querySelector('[id^="chat-messages-"], [data-list-id="chat-messages"]'),
+      memberListPresent: !!document.querySelector('[aria-label*="Members"], [aria-label*="Member List"]'),
+      threadPanePresent: [...document.querySelectorAll('[aria-label], [role="heading"], h2, h3')].some((el) => /thread/i.test(text(el))),
+      composerPresent: !!document.querySelector('[role="textbox"], textarea, div[contenteditable="true"]'),
+      selectedGuild,
+      selectedChannel,
+    });
+  `;
+}
+function buildStateExpression() {
+  return String.raw`(() => {
+    ${buildSharedDiscordHelpers()}
+    return JSON.stringify({
+      ok: true,
+      site: 'Discord',
+      ...diagnostics(),
+    });
+  })();`;
+}
+function buildMessageExtractionExpression(limit) {
+  return String.raw`(() => {
+    ${buildSharedDiscordHelpers()}
+    const rows = uniqueBy(
+      [...document.querySelectorAll('[id^="chat-messages-"]')]
+        .filter((el) => visible(el))
+        .map((el, index) => {
+          const idAttr = el.getAttribute('id') || '';
+          const messageId = idAttr.match(/chat-messages-(\d{8,})/)?.[1] || null;
+          const author = text(el.querySelector('[id^="message-username-"], h3 span, h2 span')) || null;
+          const timestampIso = el.querySelector('time')?.getAttribute('datetime') || null;
+          const timestampText = text(el.querySelector('time')) || null;
+          const contentParts = [...el.querySelectorAll('[id^="message-content-"], [class*="messageContent"]')]
+            .map((node) => text(node))
+            .filter(Boolean);
+          const content = contentParts.join('\n').trim() || null;
+          const replySnippet = text(el.querySelector('[id^="message-reply-context-"], [class*="repliedMessage"]')) || null;
+          const mentionCount = [...el.querySelectorAll('[class*="mention"], [role="link"]')]
+            .map((node) => text(node))
+            .filter((value) => /^[@#]/.test(value)).length;
+          const attachmentCount = el.querySelectorAll('img[src], video, audio, a[href][download]').length;
+          const reactionCount = el.querySelectorAll('[aria-label*="reaction"], [class*="reaction"]').length;
+          return {
+            index,
+            messageId,
+            author,
+            timestampIso,
+            timestampText,
+            content,
+            replySnippet,
+            mentionCount,
+            attachmentCount,
+            reactionCount,
+            rawText: text(el) || null,
+          };
+        })
+        .filter((item) => item.messageId || item.content || item.author),
+      (item) => item.messageId || [item.author || '', item.timestampIso || item.timestampText || '', item.content || item.rawText || ''].join(':'),
+    ).slice(0, ${Math.max(1, Math.min(limit, 100))});
+    return JSON.stringify({ ok: true, count: rows.length, items: rows, diagnostics: diagnostics() });
+  })();`;
+}
+function buildChannelExtractionExpression(limit) {
+  return String.raw`(() => {
+    ${buildSharedDiscordHelpers()}
+    const rows = uniqueBy(
+      [...document.querySelectorAll('[data-list-item-id^="channels___"], nav a[href*="/channels/"]')]
+        .map((node, index) => {
+          const anchor = node.matches('a[href*="/channels/"]') ? node : node.querySelector('a[href*="/channels/"]');
+          if (!anchor || !visible(anchor)) return null;
+          const href = anchor.getAttribute('href') || '';
+          const match = href.match(/\/channels\/([^/]+)\/(\d+)/);
+          if (!match) return null;
+          const label = clean(anchor.getAttribute('aria-label') || node.getAttribute('aria-label') || '');
+          const name = text(anchor) || label || null;
+          if (!name) return null;
+          const containerText = text(node) || '';
+          return {
+            index,
+            name,
+            href: new URL(href, location.origin).toString(),
+            guildId: match[1],
+            channelId: match[2],
+            selected: anchor.getAttribute('aria-current') === 'page' || anchor.getAttribute('aria-selected') === 'true' || node.getAttribute('aria-selected') === 'true' || href === location.pathname,
+            unreadHint: /unread|new|mention/i.test((label || '') + ' ' + (containerText || '')),
+            label: label || null,
+          };
+        })
+        .filter(Boolean),
+      (item) => item.href,
+    ).slice(0, ${Math.max(1, Math.min(limit, 100))});
+    return JSON.stringify({ ok: true, count: rows.length, items: rows, diagnostics: diagnostics() });
+  })();`;
+}
+function buildThreadExtractionExpression(limit) {
+  return String.raw`(() => {
+    ${buildSharedDiscordHelpers()}
+    const rows = uniqueBy(
+      [...document.querySelectorAll('a[href*="/channels/"], [data-list-item-id*="thread"], [aria-label*="Thread"] a[href*="/channels/"]')]
+        .map((node, index) => {
+          const anchor = node.matches('a[href*="/channels/"]') ? node : node.querySelector('a[href*="/channels/"]');
+          if (!anchor || !visible(anchor)) return null;
+          const href = anchor.getAttribute('href') || '';
+          const match = href.match(/\/channels\/([^/]+)\/(\d+)/);
+          if (!match) return null;
+          const container = node.closest('[data-list-item-id], [role="listitem"], li, div') || node;
+          const label = clean(anchor.getAttribute('aria-label') || container.getAttribute('aria-label') || '');
+          const body = text(container) || text(anchor) || '';
+          if (!/thread|forum|post/i.test((label || '') + ' ' + (body || ''))) return null;
+          return {
+            index,
+            title: text(anchor) || label || null,
+            href: new URL(href, location.origin).toString(),
+            guildId: match[1],
+            channelId: match[2],
+            selected: anchor.getAttribute('aria-current') === 'page' || anchor.getAttribute('aria-selected') === 'true',
+            label: label || null,
+            rawText: body || null,
+          };
+        })
+        .filter(Boolean),
+      (item) => item.href,
+    ).slice(0, ${Math.max(1, Math.min(limit, 100))});
+    return JSON.stringify({ ok: true, count: rows.length, items: rows, diagnostics: diagnostics() });
+  })();`;
 }
 function parseJsonResult(raw) {
   if (typeof raw === "string") {
@@ -21008,7 +21159,7 @@ var TOOL_SET = [
   },
   {
     name: "discord_get_state",
-    description: "Inspect the current Discord page state.",
+    description: "Inspect the current Discord page state, including route kind, login requirement, and major pane presence.",
     inputSchema: { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false },
     handler: async (args) => {
       const input = asObject(args, "discord_get_state arguments");
@@ -21026,11 +21177,29 @@ var TOOL_SET = [
   },
   {
     name: "discord_extract_visible_messages",
-    description: "Extract currently visible Discord messages from the active view.",
+    description: "Extract currently visible Discord messages with structured metadata from the active view.",
     inputSchema: { type: "object", properties: { limit: { type: "number" }, tabId: { type: "string" } }, additionalProperties: false },
     handler: async (args) => {
       const input = asObject(args, "discord_extract_visible_messages arguments");
-      return textResult(JSON.stringify(await extractVisible(asOptionalNumber(input.limit) ?? 10, asOptionalString(input.tabId)), null, 2));
+      return textResult(JSON.stringify(await extractVisibleMessages(asOptionalNumber(input.limit) ?? 10, asOptionalString(input.tabId)), null, 2));
+    }
+  },
+  {
+    name: "discord_extract_channels",
+    description: "Extract visible Discord channels from the current guild/sidebar.",
+    inputSchema: { type: "object", properties: { limit: { type: "number" }, tabId: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_extract_channels arguments");
+      return textResult(JSON.stringify(await extractChannels(asOptionalNumber(input.limit) ?? 25, asOptionalString(input.tabId)), null, 2));
+    }
+  },
+  {
+    name: "discord_extract_threads",
+    description: "Extract visible Discord thread/forum rows from the current view when present.",
+    inputSchema: { type: "object", properties: { limit: { type: "number" }, tabId: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_extract_threads arguments");
+      return textResult(JSON.stringify(await extractThreads(asOptionalNumber(input.limit) ?? 25, asOptionalString(input.tabId)), null, 2));
     }
   }
 ];

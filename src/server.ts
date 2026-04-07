@@ -1,7 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { daemonHealth } from "./connection.js";
-import { extractVisible, getSiteState, openSite } from "./site.js";
+import { extractChannels, extractThreads, extractVisibleMessages, getSiteState, openSite } from "./site.js";
 import type { ToolDefinition } from "./types.js";
 import { asObject, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
 
@@ -23,7 +23,7 @@ export const TOOL_SET: ToolDefinition[] = [
   },
   {
     name: "discord_get_state",
-    description: "Inspect the current Discord page state.",
+    description: "Inspect the current Discord page state, including route kind, login requirement, and major pane presence.",
     inputSchema: { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false },
     handler: async (args) => {
       const input = asObject(args, "discord_get_state arguments");
@@ -41,11 +41,29 @@ export const TOOL_SET: ToolDefinition[] = [
   },
   {
     name: "discord_extract_visible_messages",
-    description: "Extract currently visible Discord messages from the active view.",
+    description: "Extract currently visible Discord messages with structured metadata from the active view.",
     inputSchema: { type: "object", properties: { limit: { type: "number" }, tabId: { type: "string" } }, additionalProperties: false },
     handler: async (args) => {
       const input = asObject(args, "discord_extract_visible_messages arguments");
-      return textResult(JSON.stringify(await extractVisible(asOptionalNumber(input.limit) ?? 10, asOptionalString(input.tabId)), null, 2));
+      return textResult(JSON.stringify(await extractVisibleMessages(asOptionalNumber(input.limit) ?? 10, asOptionalString(input.tabId)), null, 2));
+    },
+  },
+  {
+    name: "discord_extract_channels",
+    description: "Extract visible Discord channels from the current guild/sidebar.",
+    inputSchema: { type: "object", properties: { limit: { type: "number" }, tabId: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_extract_channels arguments");
+      return textResult(JSON.stringify(await extractChannels(asOptionalNumber(input.limit) ?? 25, asOptionalString(input.tabId)), null, 2));
+    },
+  },
+  {
+    name: "discord_extract_threads",
+    description: "Extract visible Discord thread/forum rows from the current view when present.",
+    inputSchema: { type: "object", properties: { limit: { type: "number" }, tabId: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_extract_threads arguments");
+      return textResult(JSON.stringify(await extractThreads(asOptionalNumber(input.limit) ?? 25, asOptionalString(input.tabId)), null, 2));
     },
   },
 ];

@@ -1,58 +1,215 @@
 import { ensureSiteTab, evaluate } from "./connection.js";
 
-    export async function openSite(path?: string) {
-      return ensureSiteTab(path || '/channels/@me');
-    }
+export async function openSite(path?: string) {
+  return ensureSiteTab(path || "/channels/@me");
+}
 
-    export async function getSiteState(tabId?: string) {
-      const raw = await evaluate<string>(String.raw`(() => {
-        const url = location.href;
-        const path = location.pathname + location.hash;
-        const title = document.title || null;
-        const mainPresent = !!document.querySelector('main, [role="main"]');
-        const selectedGuild = document.querySelector('[aria-label*="Servers"] [aria-selected="true"]')?.getAttribute('aria-label') || null;
-const selectedChannel = document.querySelector('[role="link"][aria-current="page"], [data-list-item-id*="channels___"] [aria-selected="true"]')?.textContent?.trim() || null;
-        return JSON.stringify({
-          ok: true,
-          site: 'Discord',
-          url,
-          path,
-          title,
-          mainPresent,
-          selectedGuild,
-        selectedChannel,
-        });
-      })();`, tabId);
-      return parseJsonResult(raw);
-    }
+export async function getSiteState(tabId?: string) {
+  const raw = await evaluate<string>(buildStateExpression(), tabId);
+  return parseJsonResult(raw);
+}
 
-    export async function extractVisible(limit = 10, tabId?: string) {
-      const raw = await evaluate<string>(String.raw`(() => {
-        const diagnostics = {
-          url: location.href,
-          path: location.pathname + location.hash,
-          title: document.title || null,
-          mainPresent: !!document.querySelector('main, [role="main"]'),
-        };
-        const rows = [...document.querySelectorAll('[id^="chat-messages-"], [class*="messageListItem"]')]
-  .map((el, index) => ({
-    index,
-    text: (el.innerText || el.textContent || '').trim(),
-  }))
-  .filter((item) => item.text)
-  .slice(0, limit);
-return { ok: true, count: rows.length, items: rows, diagnostics };
-      })();`, tabId);
-      return parseJsonResult(raw);
-    }
+export async function extractVisibleMessages(limit = 10, tabId?: string) {
+  const raw = await evaluate<string>(buildMessageExtractionExpression(limit), tabId);
+  return parseJsonResult(raw);
+}
 
-    function parseJsonResult(raw: unknown) {
-      if (typeof raw === "string") {
-        try {
-          return JSON.parse(raw);
-        } catch {
-          return { raw };
-        }
-      }
-      return raw;
+export async function extractChannels(limit = 25, tabId?: string) {
+  const raw = await evaluate<string>(buildChannelExtractionExpression(limit), tabId);
+  return parseJsonResult(raw);
+}
+
+export async function extractThreads(limit = 25, tabId?: string) {
+  const raw = await evaluate<string>(buildThreadExtractionExpression(limit), tabId);
+  return parseJsonResult(raw);
+}
+
+function buildSharedDiscordHelpers() {
+  return String.raw`
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const text = (el) => clean(el?.innerText || el?.textContent || '');
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const uniqueBy = (items, keyFn) => {
+      const seen = new Set();
+      return items.filter((item) => {
+        const key = keyFn(item);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+    const path = location.pathname + location.hash;
+    const pathParts = location.pathname.split('/').filter(Boolean);
+    const guildId = pathParts[1] && /^\d+$/.test(pathParts[1]) ? pathParts[1] : null;
+    const channelId = pathParts[2] && /^\d+$/.test(pathParts[2]) ? pathParts[2] : null;
+    const routeKind = (() => {
+      if (/^\/login/.test(location.pathname)) return 'login';
+      if (/^\/channels\/[@a-zA-Z0-9_-]+\/\d+/.test(location.pathname)) return 'channel';
+      if (location.pathname === '/channels/@me') return 'friends';
+      if (/^\/channels\/\d+$/.test(location.pathname)) return 'guild';
+      if (/^\/invite\//.test(location.pathname)) return 'invite';
+      if (/^\/settings/.test(location.pathname)) return 'settings';
+      return 'unknown';
+    })();
+    const pageText = document.body?.innerText || '';
+    const loginRequired = routeKind === 'login' || /welcome back!|log in with qr code|need an account\?|or sign in with passkey/i.test(pageText);
+    const selectedGuild = text(document.querySelector('nav[aria-label] [aria-current="page"], nav[aria-label] [aria-selected="true"]')) || null;
+    const selectedChannel = text(document.querySelector('[data-list-item-id^="channels___"] [aria-current="page"], [data-list-item-id^="channels___"][aria-selected="true"], a[href*="/channels/"][aria-current="page"]')) || null;
+    const headings = [...document.querySelectorAll('h1, h2, h3, [role="heading"]')].map((el) => text(el)).filter(Boolean).slice(0, 10);
+    const diagnostics = () => ({
+      url: location.href,
+      path,
+      title: document.title || null,
+      routeKind,
+      loginRequired,
+      guildId,
+      channelId,
+      headings,
+      appMountPresent: !!document.getElementById('app-mount'),
+      mainPresent: !!document.querySelector('main, [role="main"]'),
+      serverRailPresent: !!document.querySelector('nav[aria-label], [aria-label*="Servers"]'),
+      channelRailPresent: !!document.querySelector('[data-list-item-id^="channels___"], nav a[href*="/channels/"]'),
+      messagePanePresent: !!document.querySelector('[id^="chat-messages-"], [data-list-id="chat-messages"]'),
+      memberListPresent: !!document.querySelector('[aria-label*="Members"], [aria-label*="Member List"]'),
+      threadPanePresent: [...document.querySelectorAll('[aria-label], [role="heading"], h2, h3')].some((el) => /thread/i.test(text(el))),
+      composerPresent: !!document.querySelector('[role="textbox"], textarea, div[contenteditable="true"]'),
+      selectedGuild,
+      selectedChannel,
+    });
+  `;
+}
+
+function buildStateExpression() {
+  return String.raw`(() => {
+    ${buildSharedDiscordHelpers()}
+    return JSON.stringify({
+      ok: true,
+      site: 'Discord',
+      ...diagnostics(),
+    });
+  })();`;
+}
+
+function buildMessageExtractionExpression(limit: number) {
+  return String.raw`(() => {
+    ${buildSharedDiscordHelpers()}
+    const rows = uniqueBy(
+      [...document.querySelectorAll('[id^="chat-messages-"]')]
+        .filter((el) => visible(el))
+        .map((el, index) => {
+          const idAttr = el.getAttribute('id') || '';
+          const messageId = idAttr.match(/chat-messages-(\d{8,})/)?.[1] || null;
+          const author = text(el.querySelector('[id^="message-username-"], h3 span, h2 span')) || null;
+          const timestampIso = el.querySelector('time')?.getAttribute('datetime') || null;
+          const timestampText = text(el.querySelector('time')) || null;
+          const contentParts = [...el.querySelectorAll('[id^="message-content-"], [class*="messageContent"]')]
+            .map((node) => text(node))
+            .filter(Boolean);
+          const content = contentParts.join('\n').trim() || null;
+          const replySnippet = text(el.querySelector('[id^="message-reply-context-"], [class*="repliedMessage"]')) || null;
+          const mentionCount = [...el.querySelectorAll('[class*="mention"], [role="link"]')]
+            .map((node) => text(node))
+            .filter((value) => /^[@#]/.test(value)).length;
+          const attachmentCount = el.querySelectorAll('img[src], video, audio, a[href][download]').length;
+          const reactionCount = el.querySelectorAll('[aria-label*="reaction"], [class*="reaction"]').length;
+          return {
+            index,
+            messageId,
+            author,
+            timestampIso,
+            timestampText,
+            content,
+            replySnippet,
+            mentionCount,
+            attachmentCount,
+            reactionCount,
+            rawText: text(el) || null,
+          };
+        })
+        .filter((item) => item.messageId || item.content || item.author),
+      (item) => item.messageId || [item.author || '', item.timestampIso || item.timestampText || '', item.content || item.rawText || ''].join(':'),
+    ).slice(0, ${Math.max(1, Math.min(limit, 100))});
+    return JSON.stringify({ ok: true, count: rows.length, items: rows, diagnostics: diagnostics() });
+  })();`;
+}
+
+function buildChannelExtractionExpression(limit: number) {
+  return String.raw`(() => {
+    ${buildSharedDiscordHelpers()}
+    const rows = uniqueBy(
+      [...document.querySelectorAll('[data-list-item-id^="channels___"], nav a[href*="/channels/"]')]
+        .map((node, index) => {
+          const anchor = node.matches('a[href*="/channels/"]') ? node : node.querySelector('a[href*="/channels/"]');
+          if (!anchor || !visible(anchor)) return null;
+          const href = anchor.getAttribute('href') || '';
+          const match = href.match(/\/channels\/([^/]+)\/(\d+)/);
+          if (!match) return null;
+          const label = clean(anchor.getAttribute('aria-label') || node.getAttribute('aria-label') || '');
+          const name = text(anchor) || label || null;
+          if (!name) return null;
+          const containerText = text(node) || '';
+          return {
+            index,
+            name,
+            href: new URL(href, location.origin).toString(),
+            guildId: match[1],
+            channelId: match[2],
+            selected: anchor.getAttribute('aria-current') === 'page' || anchor.getAttribute('aria-selected') === 'true' || node.getAttribute('aria-selected') === 'true' || href === location.pathname,
+            unreadHint: /unread|new|mention/i.test((label || '') + ' ' + (containerText || '')),
+            label: label || null,
+          };
+        })
+        .filter(Boolean),
+      (item) => item.href,
+    ).slice(0, ${Math.max(1, Math.min(limit, 100))});
+    return JSON.stringify({ ok: true, count: rows.length, items: rows, diagnostics: diagnostics() });
+  })();`;
+}
+
+function buildThreadExtractionExpression(limit: number) {
+  return String.raw`(() => {
+    ${buildSharedDiscordHelpers()}
+    const rows = uniqueBy(
+      [...document.querySelectorAll('a[href*="/channels/"], [data-list-item-id*="thread"], [aria-label*="Thread"] a[href*="/channels/"]')]
+        .map((node, index) => {
+          const anchor = node.matches('a[href*="/channels/"]') ? node : node.querySelector('a[href*="/channels/"]');
+          if (!anchor || !visible(anchor)) return null;
+          const href = anchor.getAttribute('href') || '';
+          const match = href.match(/\/channels\/([^/]+)\/(\d+)/);
+          if (!match) return null;
+          const container = node.closest('[data-list-item-id], [role="listitem"], li, div') || node;
+          const label = clean(anchor.getAttribute('aria-label') || container.getAttribute('aria-label') || '');
+          const body = text(container) || text(anchor) || '';
+          if (!/thread|forum|post/i.test((label || '') + ' ' + (body || ''))) return null;
+          return {
+            index,
+            title: text(anchor) || label || null,
+            href: new URL(href, location.origin).toString(),
+            guildId: match[1],
+            channelId: match[2],
+            selected: anchor.getAttribute('aria-current') === 'page' || anchor.getAttribute('aria-selected') === 'true',
+            label: label || null,
+            rawText: body || null,
+          };
+        })
+        .filter(Boolean),
+      (item) => item.href,
+    ).slice(0, ${Math.max(1, Math.min(limit, 100))});
+    return JSON.stringify({ ok: true, count: rows.length, items: rows, diagnostics: diagnostics() });
+  })();`;
+}
+
+function parseJsonResult(raw: unknown) {
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return { raw };
     }
+  }
+  return raw;
+}

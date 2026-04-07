@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 const DAEMON_URL = process.env.SURFAGENT_DAEMON_URL ?? "http://127.0.0.1:7201";
 const TOKEN_PATH = join(homedir(), ".surfagent", "daemon-token.txt");
 const SITE_URL_RE = new RegExp(String.raw`https?://(?:canary\.|ptb\.)?discord\.com/`, "i");
-const BASE_URL = 'https://discord.com/channels/@me';
+const BASE_URL = "https://discord.com";
+const DEFAULT_PATH = "/channels/@me";
 
 let cachedToken: string | null | undefined;
 
@@ -80,8 +81,10 @@ export async function findSiteTab(): Promise<TabInfo | null> {
   return tabs.find((tab) => SITE_URL_RE.test(tab.url)) ?? null;
 }
 
-export async function ensureSiteTab(path = '/channels/@me'): Promise<TabInfo> {
-  const targetUrl = /^https?:\/\//i.test(path) ? path : `${BASE_URL.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+export async function ensureSiteTab(path = DEFAULT_PATH): Promise<TabInfo> {
+  const targetUrl = /^https?:\/\//i.test(path)
+    ? path
+    : `${BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
   const existing = await findSiteTab();
   if (existing) {
     await navigateTab(targetUrl, existing.id);

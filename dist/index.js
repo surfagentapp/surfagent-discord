@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 "use strict";
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -20843,6 +20844,15 @@ var SITE_URL_RE = new RegExp(String.raw`https?://(?:canary\.|ptb\.)?discord\.com
 var BASE_URL = "https://discord.com";
 var DEFAULT_PATH = "/channels/@me";
 var cachedToken;
+async function readDaemonError(path, res) {
+  const text = await res.text();
+  if (res.status === 401) {
+    throw new Error(
+      `${path} failed (HTTP 401): Unauthorized. Check SURFAGENT_AUTH_TOKEN or ~/.surfagent/daemon-token.txt.`
+    );
+  }
+  throw new Error(`${path} failed (HTTP ${res.status}): ${text}`);
+}
 function getAuthToken() {
   if (cachedToken !== void 0) return cachedToken;
   const envToken = process.env.SURFAGENT_AUTH_TOKEN?.trim();
@@ -20867,7 +20877,7 @@ async function daemonRequest(path, init, timeoutMs = 15e3) {
     headers: { ...headers(), ...init.headers ?? {} },
     signal: AbortSignal.timeout(timeoutMs)
   });
-  if (!res.ok) throw new Error(`${path} failed (HTTP ${res.status}): ${await res.text()}`);
+  if (!res.ok) await readDaemonError(path, res);
   return await res.json();
 }
 async function daemonHealth() {
@@ -21269,6 +21279,6 @@ async function main() {
   await server.connect(transport);
 }
 main().catch((error2) => {
-  console.error(error2);
+  console.error("Fatal error:", error2);
   process.exit(1);
 });

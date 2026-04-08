@@ -1,4 +1,4 @@
-import { TOOL_SET } from "./server.js";
+import { TOOL_SET, createServer } from "./server.js";
 
 const expected = [
   "discord_health_check",
@@ -9,12 +9,25 @@ const expected = [
   "discord_extract_channels",
   "discord_extract_threads",
 ];
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
 const names = TOOL_SET.map((tool) => tool.name);
+const uniqueNames = new Set(names);
 const missing = expected.filter((name) => !names.includes(name));
 
-if (missing.length > 0) {
-  console.error(JSON.stringify({ ok: false, missing, names }, null, 2));
-  process.exit(1);
+assert(names.length === uniqueNames.size, "Duplicate tool names detected.");
+assert(missing.length === 0, `Missing expected tools: ${missing.join(", ")}`);
+
+for (const tool of TOOL_SET) {
+  assert(typeof tool.description === "string" && tool.description.trim().length > 0, `Tool ${tool.name} is missing a description.`);
+  assert(tool.inputSchema?.type === "object", `Tool ${tool.name} must expose an object input schema.`);
+  assert(typeof tool.handler === "function", `Tool ${tool.name} is missing a handler.`);
 }
+
+const server = createServer();
+assert(!!server, "Failed to create MCP server instance.");
 
 console.log(JSON.stringify({ ok: true, toolCount: names.length, toolNames: names }, null, 2));

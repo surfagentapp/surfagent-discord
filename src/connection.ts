@@ -10,6 +10,16 @@ const DEFAULT_PATH = "/channels/@me";
 
 let cachedToken: string | null | undefined;
 
+async function readDaemonError(path: string, res: Response): Promise<never> {
+  const text = await res.text();
+  if (res.status === 401) {
+    throw new Error(
+      `${path} failed (HTTP 401): Unauthorized. Check SURFAGENT_AUTH_TOKEN or ~/.surfagent/daemon-token.txt.`,
+    );
+  }
+  throw new Error(`${path} failed (HTTP ${res.status}): ${text}`);
+}
+
 function getAuthToken(): string | null {
   if (cachedToken !== undefined) return cachedToken;
   const envToken = process.env.SURFAGENT_AUTH_TOKEN?.trim();
@@ -35,7 +45,7 @@ async function daemonRequest<T>(path: string, init: RequestInit, timeoutMs = 15_
     headers: { ...headers(), ...(init.headers ?? {}) },
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!res.ok) throw new Error(`${path} failed (HTTP ${res.status}): ${await res.text()}`);
+  if (!res.ok) await readDaemonError(path, res);
   return (await res.json()) as T;
 }
 

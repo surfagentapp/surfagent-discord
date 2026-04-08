@@ -42,6 +42,24 @@ function buildSharedDiscordHelpers() {
         return true;
       });
     };
+    const stripChannelChrome = (value) => clean(value)
+      .replace(/\bInvite to Channel\b/gi, '')
+      .replace(/\bNEW\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const channelNameFromLabel = (label, fallback) => {
+      const normalizedLabel = clean(label);
+      const normalizedFallback = stripChannelChrome(fallback);
+      const labelMatch = normalizedLabel.match(/^(.*?)\s*\((?:text|announcement|forum|voice|stage|media) channel\)$/i);
+      if (labelMatch?.[1]) return clean(labelMatch[1]);
+      const fallbackMatch = normalizedFallback.match(/^(?:Text|Announcements|Forum|Voice|Stage|Media|Rules)\s+(.+)$/i);
+      if (fallbackMatch?.[1]) return clean(fallbackMatch[1]);
+      return normalizedFallback || normalizedLabel || null;
+    };
+    const channelDisplayText = (node, anchor) => {
+      const label = clean(anchor?.getAttribute('aria-label') || node?.getAttribute('aria-label') || '');
+      return channelNameFromLabel(label, text(anchor) || text(node) || '');
+    };
     const path = location.pathname + location.hash;
     const pathParts = location.pathname.split('/').filter(Boolean);
     const guildId = pathParts[1] && /^\d+$/.test(pathParts[1]) ? pathParts[1] : null;
@@ -63,7 +81,9 @@ function buildSharedDiscordHelpers() {
     const captchaRequired = captchaFrames.length > 0 || /wait! are you human|please confirm you're not a robot|hcaptcha|verify you are human|cloudflare/i.test(pageText);
     const authGate = captchaRequired ? 'captcha' : loginRequired ? 'login' : registerRequired ? 'register' : 'none';
     const selectedGuild = text(document.querySelector('nav[aria-label] [aria-current="page"], nav[aria-label] [aria-selected="true"]')) || null;
-    const selectedChannel = text(document.querySelector('[data-list-item-id^="channels___"] [aria-current="page"], [data-list-item-id^="channels___"][aria-selected="true"], a[href*="/channels/"][aria-current="page"]')) || null;
+    const selectedChannelNode = document.querySelector('[data-list-item-id^="channels___"][aria-selected="true"], [data-list-item-id^="channels___"] a[aria-current="page"], a[href*="/channels/"][aria-current="page"]');
+    const selectedChannelAnchor = selectedChannelNode?.matches?.('a[href*="/channels/"]') ? selectedChannelNode : selectedChannelNode?.querySelector?.('a[href*="/channels/"]') || null;
+    const selectedChannel = channelDisplayText(selectedChannelNode, selectedChannelAnchor) || null;
     const headings = [...document.querySelectorAll('h1, h2, h3, [role="heading"]')].map((el) => text(el)).filter(Boolean).slice(0, 10);
     const authErrors = uniqueBy(
       [...document.querySelectorAll('[role="alert"], [aria-live], [class*="error"]')]
@@ -166,9 +186,9 @@ function buildChannelExtractionExpression(limit: number) {
           const match = href.match(/\/channels\/([^/]+)\/(\d+)/);
           if (!match) return null;
           const label = clean(anchor.getAttribute('aria-label') || node.getAttribute('aria-label') || '');
-          const name = text(anchor) || label || null;
+          const name = channelDisplayText(node, anchor);
           if (!name) return null;
-          const containerText = text(node) || '';
+          const containerText = stripChannelChrome(text(node) || '');
           return {
             index,
             name,
@@ -200,11 +220,11 @@ function buildThreadExtractionExpression(limit: number) {
           if (!match) return null;
           const container = node.closest('[data-list-item-id], [role="listitem"], li, div') || node;
           const label = clean(anchor.getAttribute('aria-label') || container.getAttribute('aria-label') || '');
-          const body = text(container) || text(anchor) || '';
+          const body = stripChannelChrome(text(container) || text(anchor) || '');
           if (!/thread|forum|post/i.test((label || '') + ' ' + (body || ''))) return null;
           return {
             index,
-            title: text(anchor) || label || null,
+            title: channelNameFromLabel(label, text(anchor) || body || '') || null,
             href: new URL(href, location.origin).toString(),
             guildId: match[1],
             channelId: match[2],

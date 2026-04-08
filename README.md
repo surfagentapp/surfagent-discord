@@ -6,6 +6,7 @@ Experimental SurfAgent MCP adapter for Discord.
 - health check against the SurfAgent daemon
 - open Discord in the managed browser
 - route-aware page state detection
+- explicit login/register/hCaptcha gate detection
 - visible structured message extraction
 - visible channel extraction
 - visible thread/forum row extraction

@@ -20954,6 +20954,7 @@ function buildSharedDiscordHelpers() {
     const channelId = pathParts[2] && /^\d+$/.test(pathParts[2]) ? pathParts[2] : null;
     const routeKind = (() => {
       if (/^\/login/.test(location.pathname)) return 'login';
+      if (/^\/register/.test(location.pathname)) return 'register';
       if (/^\/channels\/[@a-zA-Z0-9_-]+\/\d+/.test(location.pathname)) return 'channel';
       if (location.pathname === '/channels/@me') return 'friends';
       if (/^\/channels\/\d+$/.test(location.pathname)) return 'guild';
@@ -20963,6 +20964,10 @@ function buildSharedDiscordHelpers() {
     })();
     const pageText = document.body?.innerText || '';
     const loginRequired = routeKind === 'login' || /welcome back!|log in with qr code|need an account\?|or sign in with passkey/i.test(pageText);
+    const registerRequired = routeKind === 'register' || /create an account/i.test(pageText);
+    const captchaFrames = [...document.querySelectorAll('iframe')].filter((el) => /captcha/i.test(el.title || el.src || '') && visible(el));
+    const captchaRequired = captchaFrames.length > 0 || /wait! are you human|please confirm you're not a robot|hcaptcha|verify you are human|cloudflare/i.test(pageText);
+    const authGate = captchaRequired ? 'captcha' : loginRequired ? 'login' : registerRequired ? 'register' : 'none';
     const selectedGuild = text(document.querySelector('nav[aria-label] [aria-current="page"], nav[aria-label] [aria-selected="true"]')) || null;
     const selectedChannel = text(document.querySelector('[data-list-item-id^="channels___"] [aria-current="page"], [data-list-item-id^="channels___"][aria-selected="true"], a[href*="/channels/"][aria-current="page"]')) || null;
     const headings = [...document.querySelectorAll('h1, h2, h3, [role="heading"]')].map((el) => text(el)).filter(Boolean).slice(0, 10);
@@ -20971,7 +20976,11 @@ function buildSharedDiscordHelpers() {
       path,
       title: document.title || null,
       routeKind,
+      authGate,
       loginRequired,
+      registerRequired,
+      captchaRequired,
+      captchaFrameCount: captchaFrames.length,
       guildId,
       channelId,
       headings,

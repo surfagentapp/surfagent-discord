@@ -19106,6 +19106,13 @@ function buildSharedDiscordHelpers() {
     const selectedGuild = text(document.querySelector('nav[aria-label] [aria-current="page"], nav[aria-label] [aria-selected="true"]')) || null;
     const selectedChannel = text(document.querySelector('[data-list-item-id^="channels___"] [aria-current="page"], [data-list-item-id^="channels___"][aria-selected="true"], a[href*="/channels/"][aria-current="page"]')) || null;
     const headings = [...document.querySelectorAll('h1, h2, h3, [role="heading"]')].map((el) => text(el)).filter(Boolean).slice(0, 10);
+    const authErrors = uniqueBy(
+      [...document.querySelectorAll('[role="alert"], [aria-live], [class*="error"]')]
+        .map((el) => text(el))
+        .filter(Boolean)
+        .filter((value) => /invalid|already registered|error|incorrect|wrong password|login or password/i.test(value)),
+      (value) => value.toLowerCase(),
+    ).slice(0, 10);
     const diagnostics = () => ({
       url: location.href,
       path,
@@ -19119,6 +19126,7 @@ function buildSharedDiscordHelpers() {
       guildId,
       channelId,
       headings,
+      authErrors,
       appMountPresent: !!document.getElementById('app-mount'),
       mainPresent: !!document.querySelector('main, [role="main"]'),
       serverRailPresent: !!document.querySelector('nav[aria-label], [aria-label*="Servers"]'),

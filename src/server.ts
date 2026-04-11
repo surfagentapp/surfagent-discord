@@ -1,8 +1,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { daemonHealth } from "./connection.js";
-import { extractChannels, extractThreads, extractVisibleMessages, getSiteState, openChannelByTitle, openSite } from "./site.js";
-import { runCheckStateTask, runOpenChannelAndSummarizeTask, runOpenChannelByTitleTask } from "./task-runner.js";
+import { extractChannels, extractThreads, extractVisibleMessages, getSiteState, openChannelByTitle, openSite, openThreadByTitle } from "./site.js";
+import { runCheckStateTask, runOpenChannelAndSummarizeTask, runOpenChannelByTitleTask, runOpenThreadAndSummarizeTask } from "./task-runner.js";
 import type { ToolDefinition } from "./types.js";
 import { asObject, asOptionalBoolean, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
 
@@ -68,6 +68,25 @@ export const TOOL_SET: ToolDefinition[] = [
     },
   },
   {
+    name: "discord_open_thread_by_title",
+    description: "Open a visible Discord thread or forum post by title and return the navigated state.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, tabId: { type: "string" }, limit: { type: "number" } },
+      required: ["title"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_thread_by_title arguments");
+      return textResult(JSON.stringify(await openThreadByTitle(asOptionalString(input.title) ?? "", {
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        tabId: asOptionalString(input.tabId),
+        limit: asOptionalNumber(input.limit),
+      }), null, 2));
+    },
+  },
+  {
     name: "discord_open_channel_by_title",
     description: "Open a visible Discord channel by its title/name and verify the selected channel surface.",
     inputSchema: {
@@ -130,6 +149,26 @@ export const TOOL_SET: ToolDefinition[] = [
         exact: asOptionalBoolean(input.exact),
         path: asOptionalString(input.path),
         channelLimit: asOptionalNumber(input.channelLimit),
+        messageLimit: asOptionalNumber(input.messageLimit),
+      }), null, 2));
+    },
+  },
+  {
+    name: "discord_open_thread_and_summarize_task",
+    description: "Deterministic Discord task that opens a visible thread or forum post by title, verifies it, extracts visible messages, and returns a compact summary with proof artifacts.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, threadLimit: { type: "number" }, messageLimit: { type: "number" } },
+      required: ["title"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_thread_and_summarize_task arguments");
+      return textResult(JSON.stringify(await runOpenThreadAndSummarizeTask({
+        title: asOptionalString(input.title) ?? "",
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        threadLimit: asOptionalNumber(input.threadLimit),
         messageLimit: asOptionalNumber(input.messageLimit),
       }), null, 2));
     },

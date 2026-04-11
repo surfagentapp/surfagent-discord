@@ -2,9 +2,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { screenshot } from "./connection.js";
-import { extractChannels, extractVisibleMessages, getSiteState, openChannelByTitle, openSite } from "./site.js";
+import { extractChannels, extractThreads, extractVisibleMessages, getSiteState, openChannelByTitle, openSite, openThreadByTitle } from "./site.js";
 
-export type DiscordTaskKind = "check-state" | "open-channel-by-title" | "open-channel-and-summarize";
+export type DiscordTaskKind = "check-state" | "open-channel-by-title" | "open-channel-and-summarize" | "open-thread-and-summarize";
 
 type TaskStep = {
   name: string;
@@ -47,6 +47,14 @@ export type OpenChannelAndSummarizeOptions = {
   exact?: boolean;
   path?: string;
   channelLimit?: number;
+  messageLimit?: number;
+};
+
+export type OpenThreadAndSummarizeOptions = {
+  title: string;
+  exact?: boolean;
+  path?: string;
+  threadLimit?: number;
   messageLimit?: number;
 };
 
@@ -123,6 +131,7 @@ async function withStep<T>(run: DiscordTaskRun, name: string, fn: () => Promise<
 function inferErrorCode(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   if (/login|captcha|register/i.test(text)) return "auth_blocked";
+  if (/thread/i.test(text)) return "thread_not_found";
   if (/channel/i.test(text)) return "channel_not_found";
   if (/surface|route|state/i.test(text)) return "surface_not_ready";
   return "task_failed";
@@ -256,7 +265,7 @@ async function openAndVerifyChannel(run: DiscordTaskRun, options: OpenChannelByT
   return { opened, preflight, match, navigated, verified };
 }
 
-function summariseMessages(payload: { items?: Array<Record<string, unknown>>; diagnostics?: Record<string, unknown> }, requestedTitle: string) {
+function summariseMessages(payload: { items?: Array<Record<string, unknown>>; diagnostics?: Record<string, unknown> }, requestedTitle: string, kind: "channel" | "thread" = "channel") {
   const items = Array.isArray(payload.items) ? payload.items : [];
   const authors = new Map<string, number>();
   const snippets: string[] = [];
@@ -279,15 +288,16 @@ function summariseMessages(payload: { items?: Array<Record<string, unknown>>; di
   const topTopics = [...topics.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([term, count]) => ({ term, count }));
   const latestSnippets = snippets.slice(0, 5);
 
+  const targetName = String(payload.diagnostics?.selectedChannel ?? requestedTitle);
   return {
-    channel: String(payload.diagnostics?.selectedChannel ?? requestedTitle),
+    [kind]: targetName,
     messageCount: items.length,
     topAuthors,
     topTopics,
     latestSnippets,
     brief: items.length
-      ? `Opened ${String(payload.diagnostics?.selectedChannel ?? requestedTitle)} and extracted ${items.length} visible messages. Main voices: ${topAuthors.map((entry) => `${entry.author} (${entry.count})`).join(", ") || "unclear"}.`
-      : `Opened ${requestedTitle}, but there were no visible messages to summarise yet.`,
+      ? `Opened ${targetName} ${kind} and extracted ${items.length} visible messages. Main voices: ${topAuthors.map((entry) => `${entry.author} (${entry.count})`).join(", ") || "unclear"}.`
+      : `Opened ${requestedTitle} ${kind}, but there were no visible messages to summarise yet.`,
   };
 }
 
@@ -325,7 +335,7 @@ export async function runOpenChannelAndSummarizeTask(options: OpenChannelAndSumm
     return result;
   });
 
-  const summary = await withStep(run, "summarize-channel", async () => summariseMessages(extracted, options.title));
+  const summary = await withStep(run, "summarize-channel", async () => summariseMessages(extracted, options.title, "channel"));
 
   run.outcome = {
     opened: channelFlow.opened,
@@ -333,6 +343,73 @@ export async function runOpenChannelAndSummarizeTask(options: OpenChannelAndSumm
     matchedChannel: channelFlow.match.match,
     navigated: channelFlow.navigated,
     verified: channelFlow.verified,
+    extracted,
+    summary,
+  };
+  await overwriteRunManifest(run);
+  return run;
+}
+
+export async function runOpenThreadAndSummarizeTask(options: OpenThreadAndSummarizeOptions): Promise<DiscordTaskRun> {
+  if (!options.title?.trim()) throw new Error("title is required for open-thread-and-summarize.");
+
+  const run = createRun("open-thread-and-summarize");
+
+  const opened = await withStep(run, "open-site", async () => {
+    const tab = await openSite(options.path);
+    await captureRunScreenshot(run, tab.id, "discord-open-thread-start");
+    return tab;
+  });
+
+  const preflight = await withStep(run, "preflight-state", async () => {
+    const state = await getSiteState(opened.id);
+    await captureRunScreenshot(run, opened.id, "discord-thread-preflight");
+    return state;
+  });
+
+  const match = await withStep(run, "find-thread", async () => {
+    const before = await extractThreads(options.threadLimit ?? 50, opened.id) as { items?: Array<Record<string, unknown>> };
+    const rows = Array.isArray(before.items) ? before.items : [];
+    const needle = options.title.trim().toLowerCase();
+    const found = rows.find((item) => {
+      const name = String(item.title ?? "").trim().toLowerCase();
+      return options.exact ? name === needle : name.includes(needle);
+    }) ?? null;
+    if (!found?.href) {
+      throw new Error(`Could not find a visible Discord thread matching \"${options.title}\".`);
+    }
+    return { threads: before, match: found };
+  });
+
+  const navigated = await withStep(run, "open-matched-thread", async () => {
+    const result = await openThreadByTitle(options.title, { exact: options.exact, path: options.path, tabId: opened.id, limit: options.threadLimit ?? 50 });
+    await captureRunScreenshot(run, opened.id, "discord-thread-opened");
+    return result;
+  });
+
+  const verified = await withStep(run, "verify-thread", async () => {
+    const state = await getSiteState(opened.id);
+    if (!state.messagePanePresent) {
+      throw new Error(`Discord thread verification failed. Message pane was not visible after opening \"${options.title}\".`);
+    }
+    await captureRunScreenshot(run, opened.id, "discord-thread-verified");
+    return state;
+  });
+
+  const extracted = await withStep(run, "extract-thread-messages", async () => {
+    const result = await extractVisibleMessages(options.messageLimit ?? 20, opened.id) as { items?: Array<Record<string, unknown>>; diagnostics?: Record<string, unknown> };
+    await captureRunScreenshot(run, opened.id, "discord-thread-summary-source");
+    return result;
+  });
+
+  const summary = await withStep(run, "summarize-thread", async () => summariseMessages(extracted, options.title, "thread"));
+
+  run.outcome = {
+    opened,
+    preflight,
+    matchedThread: match.match,
+    navigated,
+    verified,
     extracted,
     summary,
   };

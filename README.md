@@ -13,6 +13,7 @@ Use `surfagent-discord` when you need Discord-specific workflows like:
 - extracting visible messages
 - extracting visible channels
 - extracting visible thread or forum rows
+- opening a thread by title and summarising it with proof
 
 ## Why this exists
 
@@ -49,6 +50,7 @@ The screen often settles ambiguity faster than clever extraction, but raw clicki
 - deterministic check-state task with proof artifacts
 - deterministic open-channel-by-title task with verification
 - deterministic open-channel-and-summarize task for compact read workflows
+- deterministic open-thread-and-summarize task for thread/forum read workflows
 
 ## Current position
 
@@ -65,8 +67,9 @@ What changed now is the first useful task-runner layer:
 - `discord_check_state_task`
 - `discord_open_channel_by_title_task`
 - `discord_open_channel_and_summarize_task`
+- `discord_open_thread_and_summarize_task`
 
-Those bundle state inspection, proof capture, verification, and compact channel summarisation so agents stop reinventing the same Discord probing loop every run.
+Those bundle state inspection, proof capture, verification, and compact Discord summarisation so agents stop reinventing the same probing loop every run.
 
 ## How to use it
 
@@ -100,13 +103,13 @@ If you are new to SurfAgent, start here first:
 
 ## Planned next scope
 
-- richer server and thread navigation primitives
+- richer server navigation primitives
 - forum-post and member extraction
 - stronger visual-proof helpers for send and reply flows
 - stronger SPA wait and recovery logic
 - receipts and persistence once the logged-in surface is stable enough to trust
 - message/reply task runners once a stable logged-in write surface is proven
-- thread/forum specific task runners once channel-level read paths are comfortably reliable
+- proof-heavy send and reply runners once live logged-in write surfaces are stable enough to trust
 
 ## Notes
 

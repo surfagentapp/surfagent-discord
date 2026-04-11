@@ -20873,6 +20873,23 @@ async function openChannelByTitle(title, options = {}) {
   const state = await getSiteState(navigated.id);
   return { match, navigated, state };
 }
+async function openThreadByTitle(title, options = {}) {
+  const target = title.trim().toLowerCase();
+  if (!target) throw new Error("title is required.");
+  const tab = options.path ? await openSite(options.path) : null;
+  const activeTabId = tab?.id ?? options.tabId;
+  const threads = await extractThreads(options.limit ?? 50, activeTabId);
+  const rows = Array.isArray(threads.items) ? threads.items : [];
+  const match = rows.find((item) => {
+    const name = String(item.title ?? "").trim().toLowerCase();
+    return options.exact ? name === target : name.includes(target);
+  }) ?? null;
+  const href = String(match?.href ?? "").trim();
+  if (!href) throw new Error(`Could not find a visible Discord thread matching "${title}".`);
+  const navigated = await openSite(href);
+  const state = await getSiteState(navigated.id);
+  return { match, navigated, state };
+}
 function buildSharedDiscordHelpers() {
   return String.raw`
     const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
@@ -21163,6 +21180,7 @@ async function withStep(run, name, fn) {
 function inferErrorCode(error2) {
   const text = error2 instanceof Error ? error2.message : String(error2);
   if (/login|captcha|register/i.test(text)) return "auth_blocked";
+  if (/thread/i.test(text)) return "thread_not_found";
   if (/channel/i.test(text)) return "channel_not_found";
   if (/surface|route|state/i.test(text)) return "surface_not_ready";
   return "task_failed";
@@ -21279,7 +21297,7 @@ async function openAndVerifyChannel(run, options) {
   });
   return { opened, preflight, match, navigated, verified };
 }
-function summariseMessages(payload, requestedTitle) {
+function summariseMessages(payload, requestedTitle, kind = "channel") {
   const items = Array.isArray(payload.items) ? payload.items : [];
   const authors = /* @__PURE__ */ new Map();
   const snippets = [];
@@ -21297,13 +21315,14 @@ function summariseMessages(payload, requestedTitle) {
   const topAuthors = [...authors.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([author, count]) => ({ author, count }));
   const topTopics = [...topics.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([term, count]) => ({ term, count }));
   const latestSnippets = snippets.slice(0, 5);
+  const targetName = String(payload.diagnostics?.selectedChannel ?? requestedTitle);
   return {
-    channel: String(payload.diagnostics?.selectedChannel ?? requestedTitle),
+    [kind]: targetName,
     messageCount: items.length,
     topAuthors,
     topTopics,
     latestSnippets,
-    brief: items.length ? `Opened ${String(payload.diagnostics?.selectedChannel ?? requestedTitle)} and extracted ${items.length} visible messages. Main voices: ${topAuthors.map((entry) => `${entry.author} (${entry.count})`).join(", ") || "unclear"}.` : `Opened ${requestedTitle}, but there were no visible messages to summarise yet.`
+    brief: items.length ? `Opened ${targetName} ${kind} and extracted ${items.length} visible messages. Main voices: ${topAuthors.map((entry) => `${entry.author} (${entry.count})`).join(", ") || "unclear"}.` : `Opened ${requestedTitle} ${kind}, but there were no visible messages to summarise yet.`
   };
 }
 async function runOpenChannelByTitleTask(options) {
@@ -21334,13 +21353,70 @@ async function runOpenChannelAndSummarizeTask(options) {
     await captureRunScreenshot(run, channelFlow.opened.id, "discord-summary-source");
     return result;
   });
-  const summary = await withStep(run, "summarize-channel", async () => summariseMessages(extracted, options.title));
+  const summary = await withStep(run, "summarize-channel", async () => summariseMessages(extracted, options.title, "channel"));
   run.outcome = {
     opened: channelFlow.opened,
     preflight: channelFlow.preflight,
     matchedChannel: channelFlow.match.match,
     navigated: channelFlow.navigated,
     verified: channelFlow.verified,
+    extracted,
+    summary
+  };
+  await overwriteRunManifest(run);
+  return run;
+}
+async function runOpenThreadAndSummarizeTask(options) {
+  if (!options.title?.trim()) throw new Error("title is required for open-thread-and-summarize.");
+  const run = createRun("open-thread-and-summarize");
+  const opened = await withStep(run, "open-site", async () => {
+    const tab = await openSite(options.path);
+    await captureRunScreenshot(run, tab.id, "discord-open-thread-start");
+    return tab;
+  });
+  const preflight = await withStep(run, "preflight-state", async () => {
+    const state = await getSiteState(opened.id);
+    await captureRunScreenshot(run, opened.id, "discord-thread-preflight");
+    return state;
+  });
+  const match = await withStep(run, "find-thread", async () => {
+    const before = await extractThreads(options.threadLimit ?? 50, opened.id);
+    const rows = Array.isArray(before.items) ? before.items : [];
+    const needle = options.title.trim().toLowerCase();
+    const found = rows.find((item) => {
+      const name = String(item.title ?? "").trim().toLowerCase();
+      return options.exact ? name === needle : name.includes(needle);
+    }) ?? null;
+    if (!found?.href) {
+      throw new Error(`Could not find a visible Discord thread matching "${options.title}".`);
+    }
+    return { threads: before, match: found };
+  });
+  const navigated = await withStep(run, "open-matched-thread", async () => {
+    const result = await openThreadByTitle(options.title, { exact: options.exact, path: options.path, tabId: opened.id, limit: options.threadLimit ?? 50 });
+    await captureRunScreenshot(run, opened.id, "discord-thread-opened");
+    return result;
+  });
+  const verified = await withStep(run, "verify-thread", async () => {
+    const state = await getSiteState(opened.id);
+    if (!state.messagePanePresent) {
+      throw new Error(`Discord thread verification failed. Message pane was not visible after opening "${options.title}".`);
+    }
+    await captureRunScreenshot(run, opened.id, "discord-thread-verified");
+    return state;
+  });
+  const extracted = await withStep(run, "extract-thread-messages", async () => {
+    const result = await extractVisibleMessages(options.messageLimit ?? 20, opened.id);
+    await captureRunScreenshot(run, opened.id, "discord-thread-summary-source");
+    return result;
+  });
+  const summary = await withStep(run, "summarize-thread", async () => summariseMessages(extracted, options.title, "thread"));
+  run.outcome = {
+    opened,
+    preflight,
+    matchedThread: match.match,
+    navigated,
+    verified,
     extracted,
     summary
   };
@@ -21441,6 +21517,25 @@ var TOOL_SET = [
     }
   },
   {
+    name: "discord_open_thread_by_title",
+    description: "Open a visible Discord thread or forum post by title and return the navigated state.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, tabId: { type: "string" }, limit: { type: "number" } },
+      required: ["title"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_thread_by_title arguments");
+      return textResult(JSON.stringify(await openThreadByTitle(asOptionalString(input.title) ?? "", {
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        tabId: asOptionalString(input.tabId),
+        limit: asOptionalNumber(input.limit)
+      }), null, 2));
+    }
+  },
+  {
     name: "discord_open_channel_by_title",
     description: "Open a visible Discord channel by its title/name and verify the selected channel surface.",
     inputSchema: {
@@ -21506,6 +21601,26 @@ var TOOL_SET = [
         messageLimit: asOptionalNumber(input.messageLimit)
       }), null, 2));
     }
+  },
+  {
+    name: "discord_open_thread_and_summarize_task",
+    description: "Deterministic Discord task that opens a visible thread or forum post by title, verifies it, extracts visible messages, and returns a compact summary with proof artifacts.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, threadLimit: { type: "number" }, messageLimit: { type: "number" } },
+      required: ["title"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_thread_and_summarize_task arguments");
+      return textResult(JSON.stringify(await runOpenThreadAndSummarizeTask({
+        title: asOptionalString(input.title) ?? "",
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        threadLimit: asOptionalNumber(input.threadLimit),
+        messageLimit: asOptionalNumber(input.messageLimit)
+      }), null, 2));
+    }
   }
 ];
 function createServer() {
@@ -21539,10 +21654,12 @@ var expected = [
   "discord_extract_visible_messages",
   "discord_extract_channels",
   "discord_extract_threads",
+  "discord_open_thread_by_title",
   "discord_open_channel_by_title",
   "discord_check_state_task",
   "discord_open_channel_by_title_task",
-  "discord_open_channel_and_summarize_task"
+  "discord_open_channel_and_summarize_task",
+  "discord_open_thread_and_summarize_task"
 ];
 function assert2(condition, message) {
   if (!condition) throw new Error(message);

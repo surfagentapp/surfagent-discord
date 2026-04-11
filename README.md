@@ -26,6 +26,17 @@ It has:
 
 So this adapter focuses on state detection first, because on Discord the first mistake is usually pretending you are on the page you think you are on.
 
+## Default operating mode
+
+Discord should be treated as a **visual-first hybrid** surface.
+
+That means:
+- use Discord-native state and extraction tools first
+- escalate to screenshots or visible surface checks quickly when route, gate, or composer state is ambiguous
+- avoid pretending a selector hit is better proof than the visible guild, channel, or thread surface
+
+The screen often settles ambiguity faster than clever extraction, but raw clicking is still the fallback, not the plan.
+
 ## Current scope
 
 - health check against the SurfAgent daemon
@@ -81,6 +92,7 @@ If you are new to SurfAgent, start here first:
 
 - richer server and thread navigation primitives
 - forum-post and member extraction
+- stronger visual-proof helpers for send and reply flows
 - stronger SPA wait and recovery logic
 - receipts and persistence once the logged-in surface is stable enough to trust
 

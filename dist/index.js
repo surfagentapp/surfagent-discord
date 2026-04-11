@@ -21330,9 +21330,7 @@ async function runCheckStateTask(options = {}) {
   await overwriteRunManifest(run);
   return run;
 }
-async function runOpenChannelByTitleTask(options) {
-  if (!options.title?.trim()) throw new Error("title is required for open-channel-by-title.");
-  const run = createRun("open-channel-by-title");
+async function openAndVerifyChannel(run, options) {
   const opened = await withStep(run, "open-site", async () => {
     const tab = await openSite(options.path);
     await captureRunScreenshot(run, tab.id, "discord-open-channel-start");
@@ -21372,12 +21370,72 @@ async function runOpenChannelByTitleTask(options) {
     await captureRunScreenshot(run, opened.id, "discord-channel-verified");
     return state;
   });
+  return { opened, preflight, match, navigated, verified };
+}
+function summariseMessages(payload, requestedTitle) {
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  const authors = /* @__PURE__ */ new Map();
+  const snippets = [];
+  const topics = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    const author = String(item.author ?? "").trim();
+    if (author) authors.set(author, (authors.get(author) ?? 0) + 1);
+    const content = String(item.content ?? item.rawText ?? "").replace(/\s+/g, " ").trim();
+    if (content) snippets.push(`${author || "Unknown"}: ${content}`.slice(0, 220));
+    for (const token of content.toLowerCase().match(/[a-z][a-z0-9_-]{3,}/g) ?? []) {
+      if (["that", "with", "this", "have", "from", "your", "they", "were", "what", "when", "there", "about", "would", "could", "should", "discord", "channel"].includes(token)) continue;
+      topics.set(token, (topics.get(token) ?? 0) + 1);
+    }
+  }
+  const topAuthors = [...authors.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([author, count]) => ({ author, count }));
+  const topTopics = [...topics.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([term, count]) => ({ term, count }));
+  const latestSnippets = snippets.slice(0, 5);
+  return {
+    channel: String(payload.diagnostics?.selectedChannel ?? requestedTitle),
+    messageCount: items.length,
+    topAuthors,
+    topTopics,
+    latestSnippets,
+    brief: items.length ? `Opened ${String(payload.diagnostics?.selectedChannel ?? requestedTitle)} and extracted ${items.length} visible messages. Main voices: ${topAuthors.map((entry) => `${entry.author} (${entry.count})`).join(", ") || "unclear"}.` : `Opened ${requestedTitle}, but there were no visible messages to summarise yet.`
+  };
+}
+async function runOpenChannelByTitleTask(options) {
+  if (!options.title?.trim()) throw new Error("title is required for open-channel-by-title.");
+  const run = createRun("open-channel-by-title");
+  const channelFlow = await openAndVerifyChannel(run, options);
   run.outcome = {
-    opened,
-    preflight,
-    matchedChannel: match.match,
-    navigated,
-    verified
+    opened: channelFlow.opened,
+    preflight: channelFlow.preflight,
+    matchedChannel: channelFlow.match.match,
+    navigated: channelFlow.navigated,
+    verified: channelFlow.verified
+  };
+  await overwriteRunManifest(run);
+  return run;
+}
+async function runOpenChannelAndSummarizeTask(options) {
+  if (!options.title?.trim()) throw new Error("title is required for open-channel-and-summarize.");
+  const run = createRun("open-channel-and-summarize");
+  const channelFlow = await openAndVerifyChannel(run, {
+    title: options.title,
+    exact: options.exact,
+    path: options.path,
+    limit: options.channelLimit
+  });
+  const extracted = await withStep(run, "extract-visible-messages", async () => {
+    const result = await extractVisibleMessages(options.messageLimit ?? 20, channelFlow.opened.id);
+    await captureRunScreenshot(run, channelFlow.opened.id, "discord-summary-source");
+    return result;
+  });
+  const summary = await withStep(run, "summarize-channel", async () => summariseMessages(extracted, options.title));
+  run.outcome = {
+    opened: channelFlow.opened,
+    preflight: channelFlow.preflight,
+    matchedChannel: channelFlow.match.match,
+    navigated: channelFlow.navigated,
+    verified: channelFlow.verified,
+    extracted,
+    summary
   };
   await overwriteRunManifest(run);
   return run;
@@ -21519,6 +21577,26 @@ var TOOL_SET = [
         exact: asOptionalBoolean(input.exact),
         path: asOptionalString(input.path),
         limit: asOptionalNumber(input.limit)
+      }), null, 2));
+    }
+  },
+  {
+    name: "discord_open_channel_and_summarize_task",
+    description: "Deterministic Discord task that opens a channel by title, verifies it, extracts visible messages, and returns a compact summary with proof artifacts.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, channelLimit: { type: "number" }, messageLimit: { type: "number" } },
+      required: ["title"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_channel_and_summarize_task arguments");
+      return textResult(JSON.stringify(await runOpenChannelAndSummarizeTask({
+        title: asOptionalString(input.title) ?? "",
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        channelLimit: asOptionalNumber(input.channelLimit),
+        messageLimit: asOptionalNumber(input.messageLimit)
       }), null, 2));
     }
   }

@@ -2,7 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { daemonHealth } from "./connection.js";
 import { extractChannels, extractThreads, extractVisibleMessages, getSiteState, openChannelByTitle, openSite } from "./site.js";
-import { runCheckStateTask, runOpenChannelByTitleTask } from "./task-runner.js";
+import { runCheckStateTask, runOpenChannelAndSummarizeTask, runOpenChannelByTitleTask } from "./task-runner.js";
 import type { ToolDefinition } from "./types.js";
 import { asObject, asOptionalBoolean, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
 
@@ -111,6 +111,26 @@ export const TOOL_SET: ToolDefinition[] = [
         exact: asOptionalBoolean(input.exact),
         path: asOptionalString(input.path),
         limit: asOptionalNumber(input.limit),
+      }), null, 2));
+    },
+  },
+  {
+    name: "discord_open_channel_and_summarize_task",
+    description: "Deterministic Discord task that opens a channel by title, verifies it, extracts visible messages, and returns a compact summary with proof artifacts.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, channelLimit: { type: "number" }, messageLimit: { type: "number" } },
+      required: ["title"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_channel_and_summarize_task arguments");
+      return textResult(JSON.stringify(await runOpenChannelAndSummarizeTask({
+        title: asOptionalString(input.title) ?? "",
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        channelLimit: asOptionalNumber(input.channelLimit),
+        messageLimit: asOptionalNumber(input.messageLimit),
       }), null, 2));
     },
   },

@@ -48,6 +48,7 @@ The screen often settles ambiguity faster than clever extraction, but raw clicki
 - visible thread and forum row extraction
 - deterministic check-state task with proof artifacts
 - deterministic open-channel-by-title task with verification
+- deterministic open-channel-and-summarize task for compact read workflows
 
 ## Current position
 
@@ -63,8 +64,9 @@ It is not yet pretending to be a full mutation-heavy Discord operator, because t
 What changed now is the first useful task-runner layer:
 - `discord_check_state_task`
 - `discord_open_channel_by_title_task`
+- `discord_open_channel_and_summarize_task`
 
-Those bundle state inspection, proof capture, and verification so agents stop reinventing the same Discord probing loop every run.
+Those bundle state inspection, proof capture, verification, and compact channel summarisation so agents stop reinventing the same Discord probing loop every run.
 
 ## How to use it
 
@@ -104,6 +106,7 @@ If you are new to SurfAgent, start here first:
 - stronger SPA wait and recovery logic
 - receipts and persistence once the logged-in surface is stable enough to trust
 - message/reply task runners once a stable logged-in write surface is proven
+- thread/forum specific task runners once channel-level read paths are comfortably reliable
 
 ## Notes
 

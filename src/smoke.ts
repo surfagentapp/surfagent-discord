@@ -8,6 +8,9 @@ const expected = [
   "discord_extract_visible_messages",
   "discord_extract_channels",
   "discord_extract_threads",
+  "discord_open_channel_by_title",
+  "discord_check_state_task",
+  "discord_open_channel_by_title_task",
 ];
 
 function assert(condition: unknown, message: string): asserts condition {

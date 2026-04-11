@@ -20813,6 +20813,15 @@ async function evaluate(expression, tabId) {
   if (!data.ok) throw new Error(data.error ?? "Evaluate failed.");
   return data.result;
 }
+async function screenshot(tabId) {
+  const data = await daemonRequest(
+    "/browser/screenshot",
+    { method: "POST", body: JSON.stringify(tabId ? { tabId } : {}) },
+    2e4
+  );
+  if (!data.ok) throw new Error(data.error ?? "Screenshot failed.");
+  return data.dataUri ?? data.image ?? data.screenshot ?? "";
+}
 async function findSiteTab() {
   const tabs = await listTabs();
   return tabs.find((tab) => SITE_URL_RE.test(tab.url)) ?? null;
@@ -20846,6 +20855,23 @@ async function extractChannels(limit = 25, tabId) {
 async function extractThreads(limit = 25, tabId) {
   const raw = await evaluate(buildThreadExtractionExpression(limit), tabId);
   return parseJsonResult(raw);
+}
+async function openChannelByTitle(title, options = {}) {
+  const target = title.trim().toLowerCase();
+  if (!target) throw new Error("title is required.");
+  const tab = options.path ? await openSite(options.path) : null;
+  const activeTabId = tab?.id ?? options.tabId;
+  const channels = await extractChannels(options.limit ?? 50, activeTabId);
+  const rows = Array.isArray(channels.items) ? channels.items : [];
+  const match = rows.find((item) => {
+    const name = String(item.name ?? "").trim().toLowerCase();
+    return options.exact ? name === target : name.includes(target);
+  }) ?? null;
+  const href = String(match?.href ?? "").trim();
+  if (!href) throw new Error(`Could not find a visible Discord channel matching "${title}".`);
+  const navigated = await openSite(href);
+  const state = await getSiteState(navigated.id);
+  return { match, navigated, state };
 }
 function buildSharedDiscordHelpers() {
   return String.raw`
@@ -21069,6 +21095,201 @@ function parseJsonResult(raw) {
   return raw;
 }
 
+// src/task-runner.ts
+var import_promises = require("node:fs/promises");
+var import_node_os2 = require("node:os");
+var import_node_path2 = require("node:path");
+var RUN_ROOT = process.env.SURFAGENT_RUN_DIR || (0, import_node_path2.join)((0, import_node_os2.tmpdir)(), "surfagent-discord-runs");
+function isoNow() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function slug(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "run";
+}
+function cleanBase64Image(input) {
+  const value = input.trim();
+  const comma = value.indexOf(",");
+  return value.startsWith("data:") && comma >= 0 ? value.slice(comma + 1) : value;
+}
+async function ensureRunDir(runId) {
+  const dir = (0, import_node_path2.join)(RUN_ROOT, runId);
+  await (0, import_promises.mkdir)(dir, { recursive: true });
+  return dir;
+}
+async function writeRunFile(runId, filename, content, encoding) {
+  const dir = await ensureRunDir(runId);
+  const fullPath = (0, import_node_path2.join)(dir, filename);
+  if (typeof content === "string") await (0, import_promises.writeFile)(fullPath, content, encoding ?? "utf8");
+  else await (0, import_promises.writeFile)(fullPath, content);
+  return fullPath;
+}
+async function overwriteRunManifest(run) {
+  return writeRunFile(run.runId, "run.json", JSON.stringify(run, null, 2));
+}
+async function captureRunScreenshot(run, tabId, label) {
+  const image = await screenshot(tabId);
+  const payload = cleanBase64Image(image);
+  const path = await writeRunFile(run.runId, `${String(run.artifacts.length + 1).padStart(2, "0")}-${slug(label)}.png`, Buffer.from(payload, "base64"));
+  const artifact = { label, path, takenAt: isoNow() };
+  run.artifacts.push(artifact);
+  await overwriteRunManifest(run);
+  return artifact;
+}
+async function withStep(run, name, fn) {
+  const step = { name, status: "started", startedAt: isoNow() };
+  run.steps.push(step);
+  await overwriteRunManifest(run);
+  try {
+    const result = await fn();
+    step.status = "completed";
+    step.finishedAt = isoNow();
+    step.details = result;
+    await overwriteRunManifest(run);
+    return result;
+  } catch (error2) {
+    step.status = "failed";
+    step.finishedAt = isoNow();
+    step.details = error2 instanceof Error ? error2.message : String(error2);
+    run.ok = false;
+    run.error = {
+      code: inferErrorCode(error2),
+      message: error2 instanceof Error ? error2.message : String(error2),
+      retryable: true
+    };
+    await overwriteRunManifest(run);
+    throw error2;
+  }
+}
+function inferErrorCode(error2) {
+  const text = error2 instanceof Error ? error2.message : String(error2);
+  if (/login|captcha|register/i.test(text)) return "auth_blocked";
+  if (/channel/i.test(text)) return "channel_not_found";
+  if (/surface|route|state/i.test(text)) return "surface_not_ready";
+  return "task_failed";
+}
+function createRun(task) {
+  return {
+    ok: true,
+    adapter: "discord",
+    task,
+    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${task}`,
+    steps: [],
+    artifacts: []
+  };
+}
+function classifyState(state) {
+  if (state.authGate && state.authGate !== "none") {
+    return {
+      ready: false,
+      mode: "blocked",
+      reason: `Discord is blocked by authGate=${String(state.authGate)}`,
+      nextBestAction: "Stop and surface the login/captcha/register blocker honestly."
+    };
+  }
+  if (state.routeKind === "channel" && state.messagePanePresent) {
+    return {
+      ready: true,
+      mode: "channel-ready",
+      reason: "Discord channel surface is visible.",
+      nextBestAction: "Use extraction tools or a channel-specific task."
+    };
+  }
+  if (state.routeKind === "guild" || state.channelRailPresent) {
+    return {
+      ready: true,
+      mode: "guild-shell",
+      reason: "Discord guild shell is visible, but a concrete channel may not be selected yet.",
+      nextBestAction: "Open or verify the intended channel before claiming chat readiness."
+    };
+  }
+  if (state.routeKind === "friends") {
+    return {
+      ready: true,
+      mode: "friends",
+      reason: "Discord friends/home surface is visible.",
+      nextBestAction: "Open the intended guild or channel before extracting messages."
+    };
+  }
+  return {
+    ready: false,
+    mode: "ambiguous",
+    reason: "Discord surface is loaded, but route and visible panes do not yet prove a usable target.",
+    nextBestAction: "Inspect visible state or take a screenshot before acting."
+  };
+}
+async function runCheckStateTask(options = {}) {
+  const run = createRun("check-state");
+  const opened = await withStep(run, "open-site", async () => {
+    const tab = await openSite(options.path);
+    await captureRunScreenshot(run, tab.id, "discord-open");
+    return tab;
+  });
+  const state = await withStep(run, "inspect-state", async () => {
+    const result = await getSiteState(opened.id);
+    await captureRunScreenshot(run, opened.id, "discord-state");
+    return result;
+  });
+  run.outcome = {
+    opened,
+    state,
+    assessment: classifyState(state)
+  };
+  await overwriteRunManifest(run);
+  return run;
+}
+async function runOpenChannelByTitleTask(options) {
+  if (!options.title?.trim()) throw new Error("title is required for open-channel-by-title.");
+  const run = createRun("open-channel-by-title");
+  const opened = await withStep(run, "open-site", async () => {
+    const tab = await openSite(options.path);
+    await captureRunScreenshot(run, tab.id, "discord-open-channel-start");
+    return tab;
+  });
+  const preflight = await withStep(run, "preflight-state", async () => {
+    const state = await getSiteState(opened.id);
+    await captureRunScreenshot(run, opened.id, "discord-preflight");
+    return state;
+  });
+  const match = await withStep(run, "find-channel", async () => {
+    const before = await extractChannels(options.limit ?? 50, opened.id);
+    const rows = Array.isArray(before.items) ? before.items : [];
+    const needle = options.title.trim().toLowerCase();
+    const found = rows.find((item) => {
+      const name = String(item.name ?? "").trim().toLowerCase();
+      return options.exact ? name === needle : name.includes(needle);
+    }) ?? null;
+    if (!found?.href) {
+      throw new Error(`Could not find a visible Discord channel matching "${options.title}".`);
+    }
+    return { channels: before, match: found };
+  });
+  const navigated = await withStep(run, "open-matched-channel", async () => {
+    const result = await openChannelByTitle(options.title, { exact: options.exact, path: options.path, tabId: opened.id, limit: options.limit ?? 50 });
+    await captureRunScreenshot(run, opened.id, "discord-channel-opened");
+    return result;
+  });
+  const verified = await withStep(run, "verify-channel", async () => {
+    const state = await getSiteState(opened.id);
+    const selected = String(state.selectedChannel ?? "").trim().toLowerCase();
+    const needle = options.title.trim().toLowerCase();
+    const ok = options.exact ? selected === needle : selected.includes(needle);
+    if (!ok) {
+      throw new Error(`Discord channel verification failed. Selected channel was "${String(state.selectedChannel ?? "unknown")}".`);
+    }
+    await captureRunScreenshot(run, opened.id, "discord-channel-verified");
+    return state;
+  });
+  run.outcome = {
+    opened,
+    preflight,
+    matchedChannel: match.match,
+    navigated,
+    verified
+  };
+  await overwriteRunManifest(run);
+  return run;
+}
+
 // src/types.ts
 function textResult(text) {
   return { content: [{ type: "text", text }] };
@@ -21091,6 +21312,11 @@ function asOptionalString(value) {
 function asOptionalNumber(value) {
   if (value === void 0 || value === null) return void 0;
   if (typeof value !== "number" || Number.isNaN(value)) throw new Error("Expected a number.");
+  return value;
+}
+function asOptionalBoolean(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (typeof value !== "boolean") throw new Error("Expected a boolean value.");
   return value;
 }
 
@@ -21155,6 +21381,53 @@ var TOOL_SET = [
       const input = asObject(args, "discord_extract_threads arguments");
       return textResult(JSON.stringify(await extractThreads(asOptionalNumber(input.limit) ?? 25, asOptionalString(input.tabId)), null, 2));
     }
+  },
+  {
+    name: "discord_open_channel_by_title",
+    description: "Open a visible Discord channel by its title/name and verify the selected channel surface.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, tabId: { type: "string" }, limit: { type: "number" } },
+      required: ["title"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_channel_by_title arguments");
+      return textResult(JSON.stringify(await openChannelByTitle(asOptionalString(input.title) ?? "", {
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        tabId: asOptionalString(input.tabId),
+        limit: asOptionalNumber(input.limit)
+      }), null, 2));
+    }
+  },
+  {
+    name: "discord_check_state_task",
+    description: "Deterministic Discord task that opens Discord, captures proof artifacts, classifies the visible surface, and reports the next best action.",
+    inputSchema: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_check_state_task arguments");
+      return textResult(JSON.stringify(await runCheckStateTask({ path: asOptionalString(input.path) }), null, 2));
+    }
+  },
+  {
+    name: "discord_open_channel_by_title_task",
+    description: "Deterministic Discord task that finds a visible channel by title, opens it, captures proof artifacts, and verifies the selected channel.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, limit: { type: "number" } },
+      required: ["title"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_channel_by_title_task arguments");
+      return textResult(JSON.stringify(await runOpenChannelByTitleTask({
+        title: asOptionalString(input.title) ?? "",
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        limit: asOptionalNumber(input.limit)
+      }), null, 2));
+    }
   }
 ];
 function createServer() {
@@ -21187,7 +21460,10 @@ var expected = [
   "discord_open_channel",
   "discord_extract_visible_messages",
   "discord_extract_channels",
-  "discord_extract_threads"
+  "discord_extract_threads",
+  "discord_open_channel_by_title",
+  "discord_check_state_task",
+  "discord_open_channel_by_title_task"
 ];
 function assert2(condition, message) {
   if (!condition) throw new Error(message);

@@ -42,3 +42,9 @@ export function asOptionalNumber(value: unknown): number | undefined {
   if (typeof value !== "number" || Number.isNaN(value)) throw new Error("Expected a number.");
   return value;
 }
+
+export function asOptionalBoolean(value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") throw new Error("Expected a boolean value.");
+  return value;
+}

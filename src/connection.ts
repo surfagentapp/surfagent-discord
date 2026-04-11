@@ -86,6 +86,16 @@ export async function evaluate<T = unknown>(expression: string, tabId?: string):
   return data.result as T;
 }
 
+export async function screenshot(tabId?: string): Promise<string> {
+  const data = await daemonRequest<{ ok: boolean; image?: string; screenshot?: string; dataUri?: string; error?: string }>(
+    "/browser/screenshot",
+    { method: "POST", body: JSON.stringify(tabId ? { tabId } : {}) },
+    20_000,
+  );
+  if (!data.ok) throw new Error(data.error ?? "Screenshot failed.");
+  return data.dataUri ?? data.image ?? data.screenshot ?? "";
+}
+
 export async function findSiteTab(): Promise<TabInfo | null> {
   const tabs = await listTabs();
   return tabs.find((tab) => SITE_URL_RE.test(tab.url)) ?? null;

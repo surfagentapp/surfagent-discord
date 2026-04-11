@@ -1,9 +1,10 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { daemonHealth } from "./connection.js";
-import { extractChannels, extractThreads, extractVisibleMessages, getSiteState, openSite } from "./site.js";
+import { extractChannels, extractThreads, extractVisibleMessages, getSiteState, openChannelByTitle, openSite } from "./site.js";
+import { runCheckStateTask, runOpenChannelByTitleTask } from "./task-runner.js";
 import type { ToolDefinition } from "./types.js";
-import { asObject, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
+import { asObject, asOptionalBoolean, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
 
 export const TOOL_SET: ToolDefinition[] = [
   {
@@ -64,6 +65,53 @@ export const TOOL_SET: ToolDefinition[] = [
     handler: async (args) => {
       const input = asObject(args, "discord_extract_threads arguments");
       return textResult(JSON.stringify(await extractThreads(asOptionalNumber(input.limit) ?? 25, asOptionalString(input.tabId)), null, 2));
+    },
+  },
+  {
+    name: "discord_open_channel_by_title",
+    description: "Open a visible Discord channel by its title/name and verify the selected channel surface.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, tabId: { type: "string" }, limit: { type: "number" } },
+      required: ["title"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_channel_by_title arguments");
+      return textResult(JSON.stringify(await openChannelByTitle(asOptionalString(input.title) ?? "", {
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        tabId: asOptionalString(input.tabId),
+        limit: asOptionalNumber(input.limit),
+      }), null, 2));
+    },
+  },
+  {
+    name: "discord_check_state_task",
+    description: "Deterministic Discord task that opens Discord, captures proof artifacts, classifies the visible surface, and reports the next best action.",
+    inputSchema: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_check_state_task arguments");
+      return textResult(JSON.stringify(await runCheckStateTask({ path: asOptionalString(input.path) }), null, 2));
+    },
+  },
+  {
+    name: "discord_open_channel_by_title_task",
+    description: "Deterministic Discord task that finds a visible channel by title, opens it, captures proof artifacts, and verifies the selected channel.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, limit: { type: "number" } },
+      required: ["title"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_channel_by_title_task arguments");
+      return textResult(JSON.stringify(await runOpenChannelByTitleTask({
+        title: asOptionalString(input.title) ?? "",
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        limit: asOptionalNumber(input.limit),
+      }), null, 2));
     },
   },
 ];

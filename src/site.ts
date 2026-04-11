@@ -24,6 +24,24 @@ export async function extractThreads(limit = 25, tabId?: string) {
   return parseJsonResult(raw);
 }
 
+export async function openChannelByTitle(title: string, options: { exact?: boolean; path?: string; tabId?: string; limit?: number } = {}) {
+  const target = title.trim().toLowerCase();
+  if (!target) throw new Error("title is required.");
+  const tab = options.path ? await openSite(options.path) : null;
+  const activeTabId = tab?.id ?? options.tabId;
+  const channels = await extractChannels(options.limit ?? 50, activeTabId) as { items?: Array<Record<string, unknown>> };
+  const rows = Array.isArray(channels.items) ? channels.items : [];
+  const match = rows.find((item) => {
+    const name = String(item.name ?? '').trim().toLowerCase();
+    return options.exact ? name === target : name.includes(target);
+  }) ?? null;
+  const href = String(match?.href ?? '').trim();
+  if (!href) throw new Error(`Could not find a visible Discord channel matching \"${title}\".`);
+  const navigated = await openSite(href);
+  const state = await getSiteState(navigated.id);
+  return { match, navigated, state };
+}
+
 function buildSharedDiscordHelpers() {
   return String.raw`
     const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();

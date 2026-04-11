@@ -228,9 +228,10 @@ function buildSharedDiscordHelpers() {
     const pageText = document.body?.innerText || '';
     const loginRequired = routeKind === 'login' || /welcome back!|log in with qr code|need an account\?|or sign in with passkey/i.test(pageText);
     const registerRequired = routeKind === 'register' || /create an account/i.test(pageText);
+    const verificationRequired = /verification required|verify by phone|confirm your identity|account stays secure|continue using discord/i.test(pageText);
     const captchaFrames = [...document.querySelectorAll('iframe')].filter((el) => /captcha/i.test(el.title || el.src || '') && visible(el));
     const captchaRequired = captchaFrames.length > 0 || /wait! are you human|please confirm you're not a robot|hcaptcha|verify you are human|cloudflare/i.test(pageText);
-    const authGate = captchaRequired ? 'captcha' : loginRequired ? 'login' : registerRequired ? 'register' : 'none';
+    const authGate = captchaRequired ? 'captcha' : verificationRequired ? 'verification' : loginRequired ? 'login' : registerRequired ? 'register' : 'none';
     const selectedGuild = text(document.querySelector('nav[aria-label] [aria-current="page"], nav[aria-label] [aria-selected="true"]')) || null;
     const selectedChannelNode = document.querySelector('[data-list-item-id^="channels___"][aria-selected="true"], [data-list-item-id^="channels___"] a[aria-current="page"], a[href*="/channels/"][aria-current="page"]');
     const selectedChannelAnchor = selectedChannelNode?.matches?.('a[href*="/channels/"]') ? selectedChannelNode : selectedChannelNode?.querySelector?.('a[href*="/channels/"]') || null;
@@ -251,6 +252,7 @@ function buildSharedDiscordHelpers() {
       authGate,
       loginRequired,
       registerRequired,
+      verificationRequired,
       captchaRequired,
       captchaFrameCount: captchaFrames.length,
       guildId,

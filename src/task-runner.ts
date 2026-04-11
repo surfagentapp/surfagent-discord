@@ -138,7 +138,7 @@ async function withStep<T>(run: DiscordTaskRun, name: string, fn: () => Promise<
 
 function inferErrorCode(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
-  if (/login|captcha|register/i.test(text)) return "auth_blocked";
+  if (/login|captcha|register|verification|verify by phone|confirm your identity/i.test(text)) return "auth_blocked";
   if (/composer/i.test(text)) return "composer_not_ready";
   if (/send/i.test(text)) return "send_failed";
   if (/thread/i.test(text)) return "thread_not_found";
@@ -237,6 +237,9 @@ async function openAndVerifyChannel(run: DiscordTaskRun, options: OpenChannelByT
   const preflight = await withStep(run, "preflight-state", async () => {
     const state = await getSiteState(opened.id);
     await captureRunScreenshot(run, opened.id, "discord-preflight");
+    if (state.authGate && state.authGate !== "none") {
+      throw new Error(`Discord is blocked by authGate=${String(state.authGate)}.`);
+    }
     return state;
   });
 
@@ -374,6 +377,9 @@ export async function runOpenThreadAndSummarizeTask(options: OpenThreadAndSummar
   const preflight = await withStep(run, "preflight-state", async () => {
     const state = await getSiteState(opened.id);
     await captureRunScreenshot(run, opened.id, "discord-thread-preflight");
+    if (state.authGate && state.authGate !== "none") {
+      throw new Error(`Discord is blocked by authGate=${String(state.authGate)}.`);
+    }
     return state;
   });
 

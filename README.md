@@ -14,6 +14,7 @@ Use `surfagent-discord` when you need Discord-specific workflows like:
 - extracting visible channels
 - extracting visible thread or forum rows
 - opening a thread by title and summarising it with proof
+- sending a Discord message only when the visible composer and post-send proof are both there
 
 ## Why this exists
 
@@ -51,25 +52,28 @@ The screen often settles ambiguity faster than clever extraction, but raw clicki
 - deterministic open-channel-by-title task with verification
 - deterministic open-channel-and-summarize task for compact read workflows
 - deterministic open-thread-and-summarize task for thread/forum read workflows
+- proof-heavy channel send task with draft and post-send verification
 
 ## Current position
 
-This adapter is intentionally read-first right now.
+This adapter is still read-first, but it now has one narrow write path.
 
 That means it is built to:
 - detect where Discord actually is
 - tell you whether the profile is usable
 - extract meaningful visible state
+- allow one proof-heavy channel send flow where draft state and post-send proof are both required
 
-It is not yet pretending to be a full mutation-heavy Discord operator, because that would be a nice way to generate fake confidence and stupid bugs.
+It is still not pretending to be a full mutation-heavy Discord operator, because that would be a nice way to generate fake confidence and stupid bugs.
 
 What changed now is the first useful task-runner layer:
 - `discord_check_state_task`
 - `discord_open_channel_by_title_task`
 - `discord_open_channel_and_summarize_task`
 - `discord_open_thread_and_summarize_task`
+- `discord_open_channel_and_send_message_task`
 
-Those bundle state inspection, proof capture, verification, and compact Discord summarisation so agents stop reinventing the same probing loop every run.
+Those bundle state inspection, proof capture, verification, and compact Discord summarisation or sending so agents stop reinventing the same probing loop every run.
 
 ## How to use it
 
@@ -105,11 +109,11 @@ If you are new to SurfAgent, start here first:
 
 - richer server navigation primitives
 - forum-post and member extraction
-- stronger visual-proof helpers for send and reply flows
+- thread and DM aware send/reply flows once the first channel send path proves itself live
 - stronger SPA wait and recovery logic
 - receipts and persistence once the logged-in surface is stable enough to trust
-- message/reply task runners once a stable logged-in write surface is proven
-- proof-heavy send and reply runners once live logged-in write surfaces are stable enough to trust
+- message/reply task runners beyond the first channel send path once a stable logged-in write surface is proven
+- richer persistence checks once live logged-in write surfaces are stable enough to trust
 
 ## Notes
 

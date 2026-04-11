@@ -20983,6 +20983,118 @@ async function openThreadByTitle(title, options = {}) {
   const state = await getSiteState(navigated.id);
   return { match, navigated, state };
 }
+async function getComposerState(tabId) {
+  const raw = await evaluate(String.raw`(() => {
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const composer = [...document.querySelectorAll('[role="textbox"], textarea, [contenteditable="true"]')]
+      .find((el) => visible(el) && (el.getAttribute('role') === 'textbox' || el.getAttribute('contenteditable') === 'true')) || null;
+    const textValue = composer ? clean(composer.textContent || ('value' in composer ? composer.value : '')) : null;
+    const placeholder = composer?.getAttribute?.('data-slate-placeholder') || composer?.getAttribute?.('aria-label') || composer?.getAttribute?.('placeholder') || null;
+    return JSON.stringify({
+      ok: true,
+      composerPresent: !!composer,
+      composerTag: composer?.tagName || null,
+      composerText: textValue,
+      composerLength: textValue?.length || 0,
+      placeholder,
+      canSend: !!composer && !!textValue,
+    });
+  })();`, tabId);
+  return parseJsonResult(raw);
+}
+async function fillComposerDraft(input, tabId) {
+  const payload = JSON.stringify(input);
+  const raw = await evaluate(String.raw`(() => {
+    const input = ${payload};
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const composer = [...document.querySelectorAll('[role="textbox"], textarea, [contenteditable="true"]')]
+      .find((el) => visible(el) && (el.getAttribute('role') === 'textbox' || el.getAttribute('contenteditable') === 'true')) || null;
+    if (!composer) return JSON.stringify({ ok: false, error: 'Composer not found.' });
+    if (typeof input.text !== 'string') return JSON.stringify({ ok: false, error: 'text is required.' });
+
+    const selection = window.getSelection();
+    composer.focus();
+    if ('value' in composer) {
+      composer.value = '';
+      composer.dispatchEvent(new Event('input', { bubbles: true }));
+      composer.value = input.text;
+      composer.dispatchEvent(new InputEvent('input', { bubbles: true, data: input.text, inputType: 'insertText' }));
+    } else {
+      const range = document.createRange();
+      range.selectNodeContents(composer);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      document.execCommand?.('selectAll', false);
+      document.execCommand?.('delete', false);
+      composer.textContent = '';
+      composer.appendChild(document.createTextNode(input.text));
+      const endRange = document.createRange();
+      endRange.selectNodeContents(composer);
+      endRange.collapse(false);
+      selection?.removeAllRanges();
+      selection?.addRange(endRange);
+      composer.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, data: input.text, inputType: 'insertText' }));
+      composer.dispatchEvent(new InputEvent('input', { bubbles: true, data: input.text, inputType: 'insertText' }));
+    }
+    composer.dispatchEvent(new Event('change', { bubbles: true }));
+    composer.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'a' }));
+    const composerText = clean(composer.textContent || ('value' in composer ? composer.value : ''));
+    return JSON.stringify({ ok: true, wrote: true, composerText, length: composerText.length });
+  })();`, tabId);
+  return parseJsonResult(raw);
+}
+async function sendCurrentMessage(tabId) {
+  const raw = await evaluate(String.raw`(async () => {
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const composer = [...document.querySelectorAll('[role="textbox"], textarea, [contenteditable="true"]')]
+      .find((el) => visible(el) && (el.getAttribute('role') === 'textbox' || el.getAttribute('contenteditable') === 'true')) || null;
+    const beforeText = composer ? clean(composer.textContent || ('value' in composer ? composer.value : '')) : null;
+    if (!composer || !beforeText) {
+      return JSON.stringify({ ok: false, error: 'Composer not ready for send.', beforeText });
+    }
+    const readLastMessage = () => {
+      const rows = [...document.querySelectorAll('[id^="chat-messages-"], [data-list-item-id*="chat-messages"]')]
+        .filter((el) => visible(el));
+      const last = rows.at(-1);
+      return last ? clean(last.textContent || '') : null;
+    };
+    const beforeLastMessage = readLastMessage();
+    composer.focus();
+    composer.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', which: 13, keyCode: 13 }));
+    composer.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', which: 13, keyCode: 13 }));
+    composer.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', which: 13, keyCode: 13 }));
+    if (composer.closest('form')) composer.closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const afterText = composer ? clean(composer.textContent || ('value' in composer ? composer.value : '')) : null;
+    const lastVisibleMessage = readLastMessage();
+    return JSON.stringify({
+      ok: true,
+      attempted: true,
+      beforeText,
+      afterText,
+      composerCleared: !!beforeText && !afterText,
+      beforeLastMessage,
+      lastVisibleMessage,
+      sendConfirmedByVisibleEcho: !!beforeText && !!lastVisibleMessage && lastVisibleMessage !== beforeLastMessage && lastVisibleMessage.includes(beforeText),
+    });
+  })();`, tabId);
+  return parseJsonResult(raw);
+}
 function buildSharedDiscordHelpers() {
   return String.raw`
     const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
@@ -21273,6 +21385,8 @@ async function withStep(run, name, fn) {
 function inferErrorCode(error2) {
   const text = error2 instanceof Error ? error2.message : String(error2);
   if (/login|captcha|register/i.test(text)) return "auth_blocked";
+  if (/composer/i.test(text)) return "composer_not_ready";
+  if (/send/i.test(text)) return "send_failed";
   if (/thread/i.test(text)) return "thread_not_found";
   if (/channel/i.test(text)) return "channel_not_found";
   if (/surface|route|state/i.test(text)) return "surface_not_ready";
@@ -21516,6 +21630,52 @@ async function runOpenThreadAndSummarizeTask(options) {
   await overwriteRunManifest(run);
   return run;
 }
+async function runOpenChannelAndSendMessageTask(options) {
+  if (!options.title?.trim()) throw new Error("title is required for open-channel-and-send-message.");
+  if (!options.text?.trim()) throw new Error("text is required for open-channel-and-send-message.");
+  const run = createRun("open-channel-and-send-message");
+  const channelFlow = await openAndVerifyChannel(run, {
+    title: options.title,
+    exact: options.exact,
+    path: options.path,
+    limit: options.channelLimit
+  });
+  const draft = await withStep(run, "fill-draft", async () => {
+    const result = await fillComposerDraft({ text: options.text }, channelFlow.opened.id);
+    await captureRunScreenshot(run, channelFlow.opened.id, "discord-send-draft");
+    if (!result?.ok) throw new Error(result?.error || "Failed to fill Discord composer draft.");
+    return result;
+  });
+  const composer = await withStep(run, "verify-composer", async () => {
+    const result = await getComposerState(channelFlow.opened.id);
+    if (!result?.composerPresent) throw new Error("Discord composer not present after draft fill.");
+    if (String(result?.composerText ?? "").trim() !== options.text.trim()) {
+      throw new Error("Discord composer text does not match intended send text.");
+    }
+    return result;
+  });
+  const sent = await withStep(run, "send-message", async () => {
+    const result = await sendCurrentMessage(channelFlow.opened.id);
+    await captureRunScreenshot(run, channelFlow.opened.id, "discord-send-result");
+    if (!result?.ok) throw new Error(result?.error || "Discord send action failed.");
+    if (!result.composerCleared && !result.sendConfirmedByVisibleEcho) {
+      throw new Error("Discord send proof insufficient. Composer did not clear and no visible echo was detected.");
+    }
+    return result;
+  });
+  run.outcome = {
+    opened: channelFlow.opened,
+    preflight: channelFlow.preflight,
+    matchedChannel: channelFlow.match.match,
+    navigated: channelFlow.navigated,
+    verified: channelFlow.verified,
+    draft,
+    composer,
+    sent
+  };
+  await overwriteRunManifest(run);
+  return run;
+}
 
 // src/types.ts
 function textResult(text) {
@@ -21648,6 +21808,33 @@ var TOOL_SET = [
     }
   },
   {
+    name: "discord_get_composer_state",
+    description: "Inspect the active Discord message composer presence and current draft text.",
+    inputSchema: { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_get_composer_state arguments");
+      return textResult(JSON.stringify(await getComposerState(asOptionalString(input.tabId)), null, 2));
+    }
+  },
+  {
+    name: "discord_fill_composer_draft",
+    description: "Fill the active Discord message composer with plain text.",
+    inputSchema: { type: "object", properties: { text: { type: "string" }, tabId: { type: "string" } }, required: ["text"], additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_fill_composer_draft arguments");
+      return textResult(JSON.stringify(await fillComposerDraft({ text: asOptionalString(input.text) }, asOptionalString(input.tabId)), null, 2));
+    }
+  },
+  {
+    name: "discord_send_current_message",
+    description: "Attempt to send the current Discord composer draft and report proof signals.",
+    inputSchema: { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_send_current_message arguments");
+      return textResult(JSON.stringify(await sendCurrentMessage(asOptionalString(input.tabId)), null, 2));
+    }
+  },
+  {
     name: "discord_check_state_task",
     description: "Deterministic Discord task that opens Discord, captures proof artifacts, classifies the visible surface, and reports the next best action.",
     inputSchema: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false },
@@ -21712,6 +21899,26 @@ var TOOL_SET = [
         path: asOptionalString(input.path),
         threadLimit: asOptionalNumber(input.threadLimit),
         messageLimit: asOptionalNumber(input.messageLimit)
+      }), null, 2));
+    }
+  },
+  {
+    name: "discord_open_channel_and_send_message_task",
+    description: "Deterministic Discord task that opens a channel by title, fills the composer, sends the message, and requires visible post-send proof.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, text: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, channelLimit: { type: "number" } },
+      required: ["title", "text"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_channel_and_send_message_task arguments");
+      return textResult(JSON.stringify(await runOpenChannelAndSendMessageTask({
+        title: asOptionalString(input.title) ?? "",
+        text: asOptionalString(input.text) ?? "",
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        channelLimit: asOptionalNumber(input.channelLimit)
       }), null, 2));
     }
   }

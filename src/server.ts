@@ -1,8 +1,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { daemonHealth } from "./connection.js";
-import { extractChannels, extractThreads, extractVisibleMessages, getSiteState, openChannelByTitle, openSite, openThreadByTitle } from "./site.js";
-import { runCheckStateTask, runOpenChannelAndSummarizeTask, runOpenChannelByTitleTask, runOpenThreadAndSummarizeTask } from "./task-runner.js";
+import { extractChannels, extractThreads, extractVisibleMessages, fillComposerDraft, getComposerState, getSiteState, openChannelByTitle, openSite, openThreadByTitle, sendCurrentMessage } from "./site.js";
+import { runCheckStateTask, runOpenChannelAndSendMessageTask, runOpenChannelAndSummarizeTask, runOpenChannelByTitleTask, runOpenThreadAndSummarizeTask } from "./task-runner.js";
 import type { ToolDefinition } from "./types.js";
 import { asObject, asOptionalBoolean, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
 
@@ -106,6 +106,33 @@ export const TOOL_SET: ToolDefinition[] = [
     },
   },
   {
+    name: "discord_get_composer_state",
+    description: "Inspect the active Discord message composer presence and current draft text.",
+    inputSchema: { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_get_composer_state arguments");
+      return textResult(JSON.stringify(await getComposerState(asOptionalString(input.tabId)), null, 2));
+    },
+  },
+  {
+    name: "discord_fill_composer_draft",
+    description: "Fill the active Discord message composer with plain text.",
+    inputSchema: { type: "object", properties: { text: { type: "string" }, tabId: { type: "string" } }, required: ["text"], additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_fill_composer_draft arguments");
+      return textResult(JSON.stringify(await fillComposerDraft({ text: asOptionalString(input.text) }, asOptionalString(input.tabId)), null, 2));
+    },
+  },
+  {
+    name: "discord_send_current_message",
+    description: "Attempt to send the current Discord composer draft and report proof signals.",
+    inputSchema: { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "discord_send_current_message arguments");
+      return textResult(JSON.stringify(await sendCurrentMessage(asOptionalString(input.tabId)), null, 2));
+    },
+  },
+  {
     name: "discord_check_state_task",
     description: "Deterministic Discord task that opens Discord, captures proof artifacts, classifies the visible surface, and reports the next best action.",
     inputSchema: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false },
@@ -170,6 +197,26 @@ export const TOOL_SET: ToolDefinition[] = [
         path: asOptionalString(input.path),
         threadLimit: asOptionalNumber(input.threadLimit),
         messageLimit: asOptionalNumber(input.messageLimit),
+      }), null, 2));
+    },
+  },
+  {
+    name: "discord_open_channel_and_send_message_task",
+    description: "Deterministic Discord task that opens a channel by title, fills the composer, sends the message, and requires visible post-send proof.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, text: { type: "string" }, exact: { type: "boolean" }, path: { type: "string" }, channelLimit: { type: "number" } },
+      required: ["title", "text"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "discord_open_channel_and_send_message_task arguments");
+      return textResult(JSON.stringify(await runOpenChannelAndSendMessageTask({
+        title: asOptionalString(input.title) ?? "",
+        text: asOptionalString(input.text) ?? "",
+        exact: asOptionalBoolean(input.exact),
+        path: asOptionalString(input.path),
+        channelLimit: asOptionalNumber(input.channelLimit),
       }), null, 2));
     },
   },

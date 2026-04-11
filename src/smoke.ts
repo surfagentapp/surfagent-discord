@@ -10,10 +10,14 @@ const expected = [
   "discord_extract_threads",
   "discord_open_thread_by_title",
   "discord_open_channel_by_title",
+  "discord_get_composer_state",
+  "discord_fill_composer_draft",
+  "discord_send_current_message",
   "discord_check_state_task",
   "discord_open_channel_by_title_task",
   "discord_open_channel_and_summarize_task",
   "discord_open_thread_and_summarize_task",
+  "discord_open_channel_and_send_message_task",
 ];
 
 function assert(condition: unknown, message: string): asserts condition {

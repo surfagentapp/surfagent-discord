@@ -2,9 +2,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { screenshot } from "./connection.js";
-import { extractChannels, extractThreads, extractVisibleMessages, getSiteState, openChannelByTitle, openSite, openThreadByTitle } from "./site.js";
+import { extractChannels, extractThreads, extractVisibleMessages, fillComposerDraft, getComposerState, getSiteState, openChannelByTitle, openSite, openThreadByTitle, sendCurrentMessage } from "./site.js";
 
-export type DiscordTaskKind = "check-state" | "open-channel-by-title" | "open-channel-and-summarize" | "open-thread-and-summarize";
+export type DiscordTaskKind = "check-state" | "open-channel-by-title" | "open-channel-and-summarize" | "open-thread-and-summarize" | "open-channel-and-send-message";
 
 type TaskStep = {
   name: string;
@@ -56,6 +56,14 @@ export type OpenThreadAndSummarizeOptions = {
   path?: string;
   threadLimit?: number;
   messageLimit?: number;
+};
+
+export type OpenChannelAndSendMessageOptions = {
+  title: string;
+  text: string;
+  exact?: boolean;
+  path?: string;
+  channelLimit?: number;
 };
 
 const RUN_ROOT = process.env.SURFAGENT_RUN_DIR || join(tmpdir(), "surfagent-discord-runs");
@@ -131,6 +139,8 @@ async function withStep<T>(run: DiscordTaskRun, name: string, fn: () => Promise<
 function inferErrorCode(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   if (/login|captcha|register/i.test(text)) return "auth_blocked";
+  if (/composer/i.test(text)) return "composer_not_ready";
+  if (/send/i.test(text)) return "send_failed";
   if (/thread/i.test(text)) return "thread_not_found";
   if (/channel/i.test(text)) return "channel_not_found";
   if (/surface|route|state/i.test(text)) return "surface_not_ready";
@@ -412,6 +422,58 @@ export async function runOpenThreadAndSummarizeTask(options: OpenThreadAndSummar
     verified,
     extracted,
     summary,
+  };
+  await overwriteRunManifest(run);
+  return run;
+}
+
+export async function runOpenChannelAndSendMessageTask(options: OpenChannelAndSendMessageOptions): Promise<DiscordTaskRun> {
+  if (!options.title?.trim()) throw new Error("title is required for open-channel-and-send-message.");
+  if (!options.text?.trim()) throw new Error("text is required for open-channel-and-send-message.");
+
+  const run = createRun("open-channel-and-send-message");
+  const channelFlow = await openAndVerifyChannel(run, {
+    title: options.title,
+    exact: options.exact,
+    path: options.path,
+    limit: options.channelLimit,
+  });
+
+  const draft = await withStep(run, "fill-draft", async () => {
+    const result = await fillComposerDraft({ text: options.text }, channelFlow.opened.id) as { ok?: boolean; error?: string } & Record<string, unknown>;
+    await captureRunScreenshot(run, channelFlow.opened.id, "discord-send-draft");
+    if (!result?.ok) throw new Error(result?.error || "Failed to fill Discord composer draft.");
+    return result;
+  });
+
+  const composer = await withStep(run, "verify-composer", async () => {
+    const result = await getComposerState(channelFlow.opened.id) as Record<string, unknown>;
+    if (!result?.composerPresent) throw new Error("Discord composer not present after draft fill.");
+    if (String(result?.composerText ?? "").trim() !== options.text.trim()) {
+      throw new Error("Discord composer text does not match intended send text.");
+    }
+    return result;
+  });
+
+  const sent = await withStep(run, "send-message", async () => {
+    const result = await sendCurrentMessage(channelFlow.opened.id) as { ok?: boolean; error?: string; composerCleared?: boolean; sendConfirmedByVisibleEcho?: boolean } & Record<string, unknown>;
+    await captureRunScreenshot(run, channelFlow.opened.id, "discord-send-result");
+    if (!result?.ok) throw new Error(result?.error || "Discord send action failed.");
+    if (!result.composerCleared && !result.sendConfirmedByVisibleEcho) {
+      throw new Error("Discord send proof insufficient. Composer did not clear and no visible echo was detected.");
+    }
+    return result;
+  });
+
+  run.outcome = {
+    opened: channelFlow.opened,
+    preflight: channelFlow.preflight,
+    matchedChannel: channelFlow.match.match,
+    navigated: channelFlow.navigated,
+    verified: channelFlow.verified,
+    draft,
+    composer,
+    sent,
   };
   await overwriteRunManifest(run);
   return run;

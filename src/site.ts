@@ -60,6 +60,121 @@ export async function openThreadByTitle(title: string, options: { exact?: boolea
   return { match, navigated, state };
 }
 
+export async function getComposerState(tabId?: string) {
+  const raw = await evaluate<string>(String.raw`(() => {
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const composer = [...document.querySelectorAll('[role="textbox"], textarea, [contenteditable="true"]')]
+      .find((el) => visible(el) && (el.getAttribute('role') === 'textbox' || el.getAttribute('contenteditable') === 'true')) || null;
+    const textValue = composer ? clean(composer.textContent || ('value' in composer ? composer.value : '')) : null;
+    const placeholder = composer?.getAttribute?.('data-slate-placeholder') || composer?.getAttribute?.('aria-label') || composer?.getAttribute?.('placeholder') || null;
+    return JSON.stringify({
+      ok: true,
+      composerPresent: !!composer,
+      composerTag: composer?.tagName || null,
+      composerText: textValue,
+      composerLength: textValue?.length || 0,
+      placeholder,
+      canSend: !!composer && !!textValue,
+    });
+  })();`, tabId);
+  return parseJsonResult(raw);
+}
+
+export async function fillComposerDraft(input: { text?: string }, tabId?: string) {
+  const payload = JSON.stringify(input);
+  const raw = await evaluate<string>(String.raw`(() => {
+    const input = ${payload};
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const composer = [...document.querySelectorAll('[role="textbox"], textarea, [contenteditable="true"]')]
+      .find((el) => visible(el) && (el.getAttribute('role') === 'textbox' || el.getAttribute('contenteditable') === 'true')) || null;
+    if (!composer) return JSON.stringify({ ok: false, error: 'Composer not found.' });
+    if (typeof input.text !== 'string') return JSON.stringify({ ok: false, error: 'text is required.' });
+
+    const selection = window.getSelection();
+    composer.focus();
+    if ('value' in composer) {
+      composer.value = '';
+      composer.dispatchEvent(new Event('input', { bubbles: true }));
+      composer.value = input.text;
+      composer.dispatchEvent(new InputEvent('input', { bubbles: true, data: input.text, inputType: 'insertText' }));
+    } else {
+      const range = document.createRange();
+      range.selectNodeContents(composer);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      document.execCommand?.('selectAll', false);
+      document.execCommand?.('delete', false);
+      composer.textContent = '';
+      composer.appendChild(document.createTextNode(input.text));
+      const endRange = document.createRange();
+      endRange.selectNodeContents(composer);
+      endRange.collapse(false);
+      selection?.removeAllRanges();
+      selection?.addRange(endRange);
+      composer.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, data: input.text, inputType: 'insertText' }));
+      composer.dispatchEvent(new InputEvent('input', { bubbles: true, data: input.text, inputType: 'insertText' }));
+    }
+    composer.dispatchEvent(new Event('change', { bubbles: true }));
+    composer.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'a' }));
+    const composerText = clean(composer.textContent || ('value' in composer ? composer.value : ''));
+    return JSON.stringify({ ok: true, wrote: true, composerText, length: composerText.length });
+  })();`, tabId);
+  return parseJsonResult(raw);
+}
+
+export async function sendCurrentMessage(tabId?: string) {
+  const raw = await evaluate<string>(String.raw`(async () => {
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const composer = [...document.querySelectorAll('[role="textbox"], textarea, [contenteditable="true"]')]
+      .find((el) => visible(el) && (el.getAttribute('role') === 'textbox' || el.getAttribute('contenteditable') === 'true')) || null;
+    const beforeText = composer ? clean(composer.textContent || ('value' in composer ? composer.value : '')) : null;
+    if (!composer || !beforeText) {
+      return JSON.stringify({ ok: false, error: 'Composer not ready for send.', beforeText });
+    }
+    const readLastMessage = () => {
+      const rows = [...document.querySelectorAll('[id^="chat-messages-"], [data-list-item-id*="chat-messages"]')]
+        .filter((el) => visible(el));
+      const last = rows.at(-1);
+      return last ? clean(last.textContent || '') : null;
+    };
+    const beforeLastMessage = readLastMessage();
+    composer.focus();
+    composer.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', which: 13, keyCode: 13 }));
+    composer.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', which: 13, keyCode: 13 }));
+    composer.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', which: 13, keyCode: 13 }));
+    if (composer.closest('form')) composer.closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const afterText = composer ? clean(composer.textContent || ('value' in composer ? composer.value : '')) : null;
+    const lastVisibleMessage = readLastMessage();
+    return JSON.stringify({
+      ok: true,
+      attempted: true,
+      beforeText,
+      afterText,
+      composerCleared: !!beforeText && !afterText,
+      beforeLastMessage,
+      lastVisibleMessage,
+      sendConfirmedByVisibleEcho: !!beforeText && !!lastVisibleMessage && lastVisibleMessage !== beforeLastMessage && lastVisibleMessage.includes(beforeText),
+    });
+  })();`, tabId);
+  return parseJsonResult(raw);
+}
+
 function buildSharedDiscordHelpers() {
   return String.raw`
     const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();

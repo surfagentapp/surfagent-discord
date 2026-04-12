@@ -21320,60 +21320,95 @@ function parseJsonResult(raw) {
 }
 
 // src/task-runner.ts
-var import_promises = require("node:fs/promises");
 var import_node_os2 = require("node:os");
+var import_node_path3 = require("node:path");
+
+// src/task-runner-runtime.ts
+var import_promises = require("node:fs/promises");
 var import_node_path2 = require("node:path");
-var RUN_ROOT = process.env.SURFAGENT_RUN_DIR || (0, import_node_path2.join)((0, import_node_os2.tmpdir)(), "surfagent-discord-runs");
-function isoNow() {
-  return (/* @__PURE__ */ new Date()).toISOString();
-}
-function slug(text) {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "run";
-}
 function cleanBase64Image(input) {
   const value = input.trim();
   const comma = value.indexOf(",");
   return value.startsWith("data:") && comma >= 0 ? value.slice(comma + 1) : value;
 }
-async function ensureRunDir(runId) {
-  const dir = (0, import_node_path2.join)(RUN_ROOT, runId);
-  await (0, import_promises.mkdir)(dir, { recursive: true });
-  return dir;
+function createTaskRunnerRuntime(options) {
+  const now = options.now ?? (() => (/* @__PURE__ */ new Date()).toISOString());
+  const slug = options.slug ?? ((label) => label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "artifact");
+  async function ensureRunDir(runId) {
+    const dir = (0, import_node_path2.join)(options.rootDir, runId);
+    await (0, import_promises.mkdir)(dir, { recursive: true });
+    return dir;
+  }
+  async function writeRunFile(runId, filename, content, encoding) {
+    const dir = await ensureRunDir(runId);
+    const fullPath = (0, import_node_path2.join)(dir, filename);
+    if (typeof content === "string") await (0, import_promises.writeFile)(fullPath, content, encoding ?? "utf8");
+    else await (0, import_promises.writeFile)(fullPath, content);
+    return fullPath;
+  }
+  async function writeRunManifest(run) {
+    return writeRunFile(run.runId, "run.json", JSON.stringify(run, null, 2));
+  }
+  async function captureScreenshot(run, tabId, label) {
+    const image = await options.screenshot(tabId);
+    if (!image) return null;
+    const payload = cleanBase64Image(image);
+    const path = await writeRunFile(
+      run.runId,
+      `${String(run.artifacts.length + 1).padStart(2, "0")}-${slug(label)}.png`,
+      Buffer.from(payload, "base64")
+    );
+    const artifact = { label, path, takenAt: now() };
+    run.artifacts.push(artifact);
+    await writeRunManifest(run);
+    return artifact;
+  }
+  async function withStep2(run, name, fn) {
+    const step = { name, status: "started", startedAt: now() };
+    run.steps.push(step);
+    await writeRunManifest(run);
+    try {
+      const result = await fn();
+      step.status = "completed";
+      step.finishedAt = now();
+      step.details = result;
+      await writeRunManifest(run);
+      return result;
+    } catch (error2) {
+      step.status = "failed";
+      step.finishedAt = now();
+      step.error = { message: error2 instanceof Error ? error2.message : String(error2) };
+      await writeRunManifest(run);
+      throw error2;
+    }
+  }
+  function makeRunId(task) {
+    return `${now().replace(/[-:.TZ]/g, "").slice(0, 14)}-${task}`;
+  }
+  return {
+    makeRunId,
+    writeRunManifest,
+    captureScreenshot,
+    withStep: withStep2
+  };
 }
-async function writeRunFile(runId, filename, content, encoding) {
-  const dir = await ensureRunDir(runId);
-  const fullPath = (0, import_node_path2.join)(dir, filename);
-  if (typeof content === "string") await (0, import_promises.writeFile)(fullPath, content, encoding ?? "utf8");
-  else await (0, import_promises.writeFile)(fullPath, content);
-  return fullPath;
-}
+
+// src/task-runner.ts
+var RUN_ROOT = process.env.SURFAGENT_RUN_DIR || (0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "surfagent-discord-runs");
+var runtime = createTaskRunnerRuntime({
+  rootDir: RUN_ROOT,
+  screenshot
+});
 async function overwriteRunManifest(run) {
-  return writeRunFile(run.runId, "run.json", JSON.stringify(run, null, 2));
+  return runtime.writeRunManifest(run);
 }
 async function captureRunScreenshot(run, tabId, label) {
-  const image = await screenshot(tabId);
-  const payload = cleanBase64Image(image);
-  const path = await writeRunFile(run.runId, `${String(run.artifacts.length + 1).padStart(2, "0")}-${slug(label)}.png`, Buffer.from(payload, "base64"));
-  const artifact = { label, path, takenAt: isoNow() };
-  run.artifacts.push(artifact);
-  await overwriteRunManifest(run);
-  return artifact;
+  return runtime.captureScreenshot(run, tabId, label);
 }
 async function withStep(run, name, fn) {
-  const step = { name, status: "started", startedAt: isoNow() };
-  run.steps.push(step);
-  await overwriteRunManifest(run);
   try {
-    const result = await fn();
-    step.status = "completed";
-    step.finishedAt = isoNow();
-    step.details = result;
-    await overwriteRunManifest(run);
-    return result;
+    return await runtime.withStep(run, name, fn);
   } catch (error2) {
-    step.status = "failed";
-    step.finishedAt = isoNow();
-    step.details = error2 instanceof Error ? error2.message : String(error2);
     run.ok = false;
     run.error = {
       code: inferErrorCode(error2),
@@ -21399,7 +21434,7 @@ function createRun(task) {
     ok: true,
     adapter: "discord",
     task,
-    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${task}`,
+    runId: runtime.makeRunId(task),
     steps: [],
     artifacts: []
   };

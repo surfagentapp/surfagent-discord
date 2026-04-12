@@ -1,30 +1,14 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { screenshot } from "./connection.js";
 import { extractChannels, extractThreads, extractVisibleMessages, fillComposerDraft, getComposerState, getSiteState, openChannelByTitle, openSite, openThreadByTitle, sendCurrentMessage } from "./site.js";
+import { createTaskRunnerRuntime, type ScreenshotArtifact, type TaskRunBase, type TaskStep } from "./task-runner-runtime.js";
 
 export type DiscordTaskKind = "check-state" | "open-channel-by-title" | "open-channel-and-summarize" | "open-thread-and-summarize" | "open-channel-and-send-message";
 
-type TaskStep = {
-  name: string;
-  status: "started" | "completed" | "failed";
-  startedAt: string;
-  finishedAt?: string;
-  details?: unknown;
-};
-
-type ScreenshotArtifact = {
-  label: string;
-  path: string;
-  takenAt: string;
-};
-
-export type DiscordTaskRun = {
-  ok: boolean;
+export type DiscordTaskRun = TaskRunBase & {
   adapter: "discord";
   task: DiscordTaskKind;
-  runId: string;
   steps: TaskStep[];
   artifacts: ScreenshotArtifact[];
   outcome?: unknown;
@@ -68,63 +52,23 @@ export type OpenChannelAndSendMessageOptions = {
 
 const RUN_ROOT = process.env.SURFAGENT_RUN_DIR || join(tmpdir(), "surfagent-discord-runs");
 
-function isoNow(): string {
-  return new Date().toISOString();
-}
-
-function slug(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "run";
-}
-
-function cleanBase64Image(input: string): string {
-  const value = input.trim();
-  const comma = value.indexOf(",");
-  return value.startsWith("data:") && comma >= 0 ? value.slice(comma + 1) : value;
-}
-
-async function ensureRunDir(runId: string): Promise<string> {
-  const dir = join(RUN_ROOT, runId);
-  await mkdir(dir, { recursive: true });
-  return dir;
-}
-
-async function writeRunFile(runId: string, filename: string, content: string | Buffer, encoding?: BufferEncoding): Promise<string> {
-  const dir = await ensureRunDir(runId);
-  const fullPath = join(dir, filename);
-  if (typeof content === "string") await writeFile(fullPath, content, encoding ?? "utf8");
-  else await writeFile(fullPath, content);
-  return fullPath;
-}
+const runtime = createTaskRunnerRuntime({
+  rootDir: RUN_ROOT,
+  screenshot,
+});
 
 async function overwriteRunManifest(run: DiscordTaskRun): Promise<string> {
-  return writeRunFile(run.runId, "run.json", JSON.stringify(run, null, 2));
+  return runtime.writeRunManifest(run);
 }
 
-async function captureRunScreenshot(run: DiscordTaskRun, tabId: string | undefined, label: string): Promise<ScreenshotArtifact> {
-  const image = await screenshot(tabId);
-  const payload = cleanBase64Image(image);
-  const path = await writeRunFile(run.runId, `${String(run.artifacts.length + 1).padStart(2, "0")}-${slug(label)}.png`, Buffer.from(payload, "base64"));
-  const artifact = { label, path, takenAt: isoNow() };
-  run.artifacts.push(artifact);
-  await overwriteRunManifest(run);
-  return artifact;
+async function captureRunScreenshot(run: DiscordTaskRun, tabId: string | undefined, label: string): Promise<ScreenshotArtifact | null> {
+  return runtime.captureScreenshot(run, tabId, label);
 }
 
 async function withStep<T>(run: DiscordTaskRun, name: string, fn: () => Promise<T>): Promise<T> {
-  const step: TaskStep = { name, status: "started", startedAt: isoNow() };
-  run.steps.push(step);
-  await overwriteRunManifest(run);
   try {
-    const result = await fn();
-    step.status = "completed";
-    step.finishedAt = isoNow();
-    step.details = result;
-    await overwriteRunManifest(run);
-    return result;
+    return await runtime.withStep(run, name, fn);
   } catch (error) {
-    step.status = "failed";
-    step.finishedAt = isoNow();
-    step.details = error instanceof Error ? error.message : String(error);
     run.ok = false;
     run.error = {
       code: inferErrorCode(error),
@@ -152,7 +96,7 @@ function createRun(task: DiscordTaskKind): DiscordTaskRun {
     ok: true,
     adapter: "discord",
     task,
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${task}`,
+    runId: runtime.makeRunId(task),
     steps: [],
     artifacts: [],
   };
